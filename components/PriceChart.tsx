@@ -130,6 +130,25 @@ export default function PriceChart({
         borderColor: GRID,
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time: UTCTimestamp) => {
+          return new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'America/New_York',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }).format(new Date(time * 1000));
+        },
+      },
+      localization: {
+        timeFormatter: (time: UTCTimestamp) => {
+          return new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'America/New_York',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+          }).format(new Date(time * 1000));
+        },
       },
       width: el.clientWidth,
       height: el.clientHeight || 240,

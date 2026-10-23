@@ -319,8 +319,9 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
 
   const or = computeOpeningRange(snap.bars, DEFAULT_FILTERS.orbN);
 
-  // Chart bars: prefer RTH window for readability; EXMP locked fixture is short.
-  const chartBars = snap.bars.slice(-60);
+  // Chart bars: RTH-first for readable OR/HOD story; fall back to last 60.
+  const rthBars = snap.bars.filter((b) => isRthBar(b.t));
+  const chartBars = (rthBars.length ? rthBars : snap.bars).slice(-60);
   let vwap = vwapFromBars(chartBars);
   // Alma locked EXAMPLE snapshot: EXMP VWAP 5.78 (display contract)
   if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
