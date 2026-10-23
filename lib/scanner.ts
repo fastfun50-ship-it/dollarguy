@@ -193,9 +193,8 @@ export async function runScan(opts?: {
       lastGoodScan.status.mode === 'LIVE' &&
       provider.mode === 'LIVE' &&
       lastGoodScan.candidates.length > 0;
-    if (canReuse) {
+    if (canReuse && lastGoodScan) {
       return {
-        ...lastGoodScan,
         status: {
           ...lastGoodScan.status,
           mode: 'LIVE',
@@ -206,6 +205,7 @@ export async function runScan(opts?: {
             : `Feed fejl — viser sidste gode data. (${e instanceof Error ? e.message : 'fejl'})`,
           ws: 'DOWN',
         },
+        candidates: lastGoodScan.candidates,
         alerts: listAlerts(),
       };
     }
