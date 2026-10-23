@@ -24,3 +24,7 @@ Docs and code disagree? STOP and report — code is the truth of the implementat
 - No auto-trading / no live orders in M1.
 - No silent fake-as-live when vendor keys missing.
 - `DATA_PROVIDER` = market-data vendor (`example`|`massive`|`alpaca`), NOT broker. Default `example`.
+
+
+## Dependencies (ARCHITECTURE)
+- `lightweight-charts` (TradingView, Apache-2.0) — chart display only. Peter GO 2026-10-23. Attribution required in UI.

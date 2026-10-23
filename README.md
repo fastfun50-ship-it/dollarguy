@@ -23,3 +23,9 @@ npm run dev
 - `DATABASE_URL` / `SUPABASE_DB_URL` / `POSTGRES_URL` — optional; else “DB not configured”
 
 See `AI-ENTRY.md` and `/ai/*`.
+
+
+## Chart library
+- [`lightweight-charts`](https://www.npmjs.com/package/lightweight-charts) (TradingView) — **Apache-2.0**
+- Charts are for **display only**; OHLC / VWAP / OR come from our market-data chain (`DATA_PROVIDER`, default EXAMPLE).
+- Attribution: [TradingView](https://www.tradingview.com/) — see app footer + chart chrome link. See `node_modules/lightweight-charts/LICENSE`.
