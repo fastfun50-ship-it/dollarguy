@@ -1,20 +1,12 @@
-// Backtest runner
-// Tests selected signals over a date range in the fixed window
-
-import { getDataProvider } from './dataProvider';
-import { evaluateSignals } from './signals';
-
-export async function runBacktest(options: {
-  startDate: string;
-  endDate: string;
-  enabledSignals: string[];
-  capital?: number;
-}) {
-  const provider = getDataProvider();
-  // TODO: loop days, fetch bars in 09:35-10:35, evaluate signals, simulate trades
+/**
+ * Backtest is M2 — not functional P&L in M1.
+ */
+export async function runBacktest(_options: unknown) {
   return {
-    pnl: 0,
+    status: 'M2_PENDING' as const,
+    message: 'Backtest kommer i milepæl 2. Ingen P&L i M1.',
+    pnl: null,
     trades: [],
-    winRate: 0,
+    winRate: null,
   };
 }
