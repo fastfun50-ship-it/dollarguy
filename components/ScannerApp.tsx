@@ -108,7 +108,22 @@ export default function ScannerApp() {
     return () => clearInterval(id);
   }, [load, freeze, status?.feed]);
 
-  // Auto-select first visible candidate once
+  // Deep-link ?sym=EPOW (Alma sparse QA) — select even if not in list.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const q = new URLSearchParams(window.location.search).get('sym');
+    if (q) {
+      const sym = q.toUpperCase();
+      if (sym && sym !== selected) {
+        setDetail(null);
+        setDetailError(null);
+        setDetailLoading(true);
+        setSelected(sym);
+      }
+    }
+  }, []);
+
+  // Auto-select first visible candidate once (skip if deep-linked)
   useEffect(() => {
     if (selected || candidates.length === 0) return;
     const prefer = candidates.find((c) => c.symbol === 'EXMP') ?? candidates[0];

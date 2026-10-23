@@ -364,7 +364,7 @@ export async function runScan(opts?: {
     }
 
     // EXMP story: explicit mid-session VS alert (Alma ticker alerts 09:37:14)
-    if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
+    if (snap?.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
       newAlerts.push({
         id: 'EXMP-VS-093714',
         tsEt: '09:37:14',
@@ -467,37 +467,12 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
     try {
       const universe = await provider.listUniverse();
       snap = universe.find((u) => u.symbol === sym);
-    } catch (e) {
-      throw e instanceof Error ? e : new Error(String(e));
+    } catch {
+      // Universe failure must not block direct per-symbol bars (sparse QA).
     }
   }
-  if (!snap) return null;
-
-  // Reuse last scan candidate when present — avoid nested runScan → listUniverse.
-  const fromScan = lastGoodScan?.candidates.find((c) => c.symbol === sym);
-  const candidate: Candidate =
-    fromScan ||
-    ({
-      symbol: snap.symbol,
-      name: snap.name,
-      last: snap.last,
-      chgClosePct: chgClosePct(snap.last, snap.prevClose),
-      chgAbs: Number((snap.last - snap.prevClose).toFixed(2)),
-      gapPct: gapOpenPct(snap.open0930, snap.prevClose),
-      rvolDay: rvolDay(snap.bars, snap.avgDailyVol20d, snap.volume),
-      rvol5m: rvol5m(snap.bars, snap.avgSlot5m),
-      volume: snap.volume,
-      float: snap.float,
-      signal: null,
-      ageMin: ageMinutes(snap.bars),
-      why: [
-        'Fra cachet snapshot',
-        `RVol5 ${fmtRvol(rvol5m(snap.bars, snap.avgSlot5m))} · Float ${fmtFloat(snap.float)}`,
-      ],
-    } satisfies Candidate);
-
-  // Bars: provider TTL cache / universe bars — only network on miss/expiry.
-  let bars = snap.bars;
+  // Bars first — allow deep-link QA for symbols outside discovery (e.g. EPOW sparse IEX).
+  let bars = snap?.bars ?? [];
   let barsError: string | undefined;
   try {
     const got = await provider.getBars(sym);
@@ -506,11 +481,57 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
     barsError = e instanceof Error ? e.message : String(e);
   }
 
+  if (!snap && !bars.length && !barsError) {
+    return null;
+  }
+
+  const fromScan = lastGoodScan?.candidates.find((c) => c.symbol === sym);
+  const lastBar = bars[bars.length - 1];
+  const candidate: Candidate =
+    fromScan ||
+    (snap
+      ? ({
+          symbol: snap.symbol,
+          name: snap.name,
+          last: snap.last,
+          chgClosePct: chgClosePct(snap.last, snap.prevClose),
+          chgAbs: Number((snap.last - snap.prevClose).toFixed(2)),
+          gapPct: gapOpenPct(snap.open0930, snap.prevClose),
+          rvolDay: rvolDay(snap.bars, snap.avgDailyVol20d, snap.volume),
+          rvol5m: rvol5m(snap.bars, snap.avgSlot5m),
+          volume: snap.volume,
+          float: snap.float,
+          signal: null,
+          ageMin: ageMinutes(snap.bars),
+          why: [
+            'Fra cachet snapshot',
+            `RVol5 ${fmtRvol(rvol5m(snap.bars, snap.avgSlot5m))} · Float ${fmtFloat(snap.float)}`,
+          ],
+        } satisfies Candidate)
+      : ({
+          symbol: sym,
+          name: sym,
+          last: lastBar?.c ?? 0,
+          chgClosePct: 0,
+          chgAbs: 0,
+          gapPct: 0,
+          rvolDay: null,
+          rvol5m: null,
+          volume: bars.reduce((s, b) => s + b.v, 0),
+          float: null,
+          signal: null,
+          ageMin: ageMinutes(bars),
+          why: [
+            'Ikke i aktiv discovery — bars hentet direkte (IEX).',
+            'Float/RVol ukendt uden snapshot-baseline.',
+          ],
+        } satisfies Candidate));
+
   const or = computeOpeningRange(bars, DEFAULT_FILTERS.orbN);
   const rthBars = bars.filter((b) => isRthBar(b.t));
   const chartBars = (rthBars.length ? rthBars : bars).slice(-120);
   let vwap = vwapFromBars(chartBars);
-  if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
+  if (snap?.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
     vwap = EXMP_SNAPSHOT.vwap;
   }
 
