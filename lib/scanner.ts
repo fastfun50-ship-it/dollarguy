@@ -192,55 +192,52 @@ export async function runScan(opts?: {
   try {
     universe = await provider.listUniverse();
   } catch (e) {
-    // Local validated reference — TS narrows; no spread of optional ScanResult.
+    // Local validated reference — module-level `let` does not narrow via spread alone.
+    // Guard `prior` in the branch; return explicit ScanResult fields (no casts / !).
     const prior = lastGoodScan;
-    const reusePrior =
+    if (
       prior !== null &&
       prior.status.mode === 'LIVE' &&
       provider.mode === 'LIVE' &&
-      prior.candidates.length > 0;
-    if (reusePrior) {
+      prior.candidates.length > 0
+    ) {
       const rateLimited = isAlpacaRateLimit(e);
-      const status: ScanStatus = {
-        mode: 'LIVE',
-        session: prior.status.session,
-        feed: rateLimited ? 'RATE_LIMITED' : 'STALE',
-        feedLabel: prior.status.feedLabel,
-        lastUpdateEt: prior.status.lastUpdateEt,
-        dbConfigured: prior.status.dbConfigured,
-        ws: 'DOWN',
-        message: rateLimited
-          ? rateLimitMessage()
-          : `Feed fejl — viser sidste gode data. (${e instanceof Error ? e.message : 'fejl'})`,
-      };
-      const result: ScanResult = {
-        status,
+      return {
+        status: {
+          mode: 'LIVE',
+          session: prior.status.session,
+          feed: rateLimited ? 'RATE_LIMITED' : 'STALE',
+          feedLabel: prior.status.feedLabel,
+          lastUpdateEt: prior.status.lastUpdateEt,
+          dbConfigured: prior.status.dbConfigured,
+          ws: 'DOWN',
+          message: rateLimited
+            ? rateLimitMessage()
+            : `Feed fejl — viser sidste gode data. (${e instanceof Error ? e.message : 'fejl'})`,
+        },
         candidates: prior.candidates,
         alerts: listAlerts(),
       };
-      return result;
     }
     const rateLimited = isAlpacaRateLimit(e);
-    const status: ScanStatus = {
-      mode: meta.mode,
-      session,
-      feed: rateLimited ? 'RATE_LIMITED' : 'NOT_CONFIGURED',
-      feedLabel: provider.feedLabel,
-      lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
-      dbConfigured: isDbConfigured(),
-      ws: 'DOWN',
-      message: rateLimited
-        ? rateLimitMessage()
-        : e instanceof Error
-          ? e.message
-          : 'Datafejl',
-    };
-    const result: ScanResult = {
-      status,
+    return {
+      status: {
+        mode: meta.mode,
+        session,
+        feed: rateLimited ? 'RATE_LIMITED' : 'NOT_CONFIGURED',
+        feedLabel: provider.feedLabel,
+        lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
+        dbConfigured: isDbConfigured(),
+        ws: 'DOWN',
+        message: rateLimited
+          ? rateLimitMessage()
+          : e instanceof Error
+            ? e.message
+            : 'Datafejl',
+      },
       candidates: [],
       alerts: listAlerts(),
     };
-    return result;
   }
 
   if (opts?.empty) {
