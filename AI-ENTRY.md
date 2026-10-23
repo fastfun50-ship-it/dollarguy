@@ -28,3 +28,9 @@ Docs and code disagree? STOP and report — code is the truth of the implementat
 
 ## Dependencies (ARCHITECTURE)
 - `lightweight-charts` (TradingView, Apache-2.0) — chart display only. Peter GO 2026-10-23. Attribution required in UI.
+
+## Market data (M1)
+- Default `DATA_PROVIDER=example` → EXAMPLE badge.
+- `DATA_PROVIDER=alpaca` + `ALPACA_API_KEY` + `ALPACA_API_SECRET` → LIVE Alpaca Basic on `https://data.alpaca.markets` (SIP screener + IEX bars). Not paper-api trading host. Curl testplan: `docs/alpaca-curl-testplan.md`.
+- Never put secrets in `NEXT_PUBLIC_*` or git.
+

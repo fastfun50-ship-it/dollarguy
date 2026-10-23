@@ -3,7 +3,7 @@
 ## Existing automated checks
 | Check | Command | Status |
 |---|---|---|
-| Unit + integration (node:test) | `npm test` | required for M1 |
+| Unit + integration (node:test) | `npm test` (incl. `tests/alpaca.provider.test.ts`) | required for M1 |
 | Production build | `npm run build` | required before PR |
 
 ## Critical user flows
@@ -25,5 +25,5 @@
 | session | flow 7 |
 
 ## TEST GAPs
-- **Live market-data chain** not verified (no vendor keys / subscription). M1 ships EXAMPLE-only until Peter approves data purchase. Report as blocker, not DONE for live chain.
+- **Live Alpaca chain** code-wired; **not** HTTP-verified here (no keys in agent). After Peter sets Preview env → run `docs/alpaca-curl-testplan.md` + confirm LIVE badge. Until then EXAMPLE default. Float/IEX limits = known GUL.
 - Browser E2E (Playwright) not in M1 — API/integration covers chain; UI visually matched to Alma design manually when preview up.
