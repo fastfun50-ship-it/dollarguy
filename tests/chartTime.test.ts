@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { toUtcSeconds, prepareChartSeries, aggregateBars } from '../lib/chartTime';
+import { toUtcSeconds, prepareChartSeries, aggregateBars, computeVwapSeries, visibleLogicalRangeForBars } from '../lib/chartTime';
 import type { Bar } from '../lib/types';
 
 function bar(iso: string, c = 1): Bar {
@@ -51,5 +51,24 @@ describe('chartTime — lightweight-charts seconds', () => {
     for (let i = 1; i < times.length; i++) {
       assert.ok(times[i] >= times[i - 1]);
     }
+  });
+});
+
+describe('chartTime — VWAP series + sparse range', () => {
+  it('computeVwapSeries skips zero-volume (no invented points)', () => {
+    const bars: Bar[] = [
+      { t: '2026-10-23T13:30:00Z', o: 1, h: 1.1, l: 0.9, c: 1, v: 0 },
+      { t: '2026-10-23T13:31:00Z', o: 1, h: 1.2, l: 0.9, c: 1.1, v: 1000 },
+      { t: '2026-10-23T13:32:00Z', o: 1.1, h: 1.3, l: 1.0, c: 1.2, v: 1000 },
+    ];
+    const s = computeVwapSeries(bars);
+    assert.equal(s.length, 2);
+  });
+
+  it('sparse visible range keeps min slots (candles stay narrow)', () => {
+    const r = visibleLogicalRangeForBars(3, 48);
+    assert.ok(r.to - r.from >= 47);
+    const dense = visibleLogicalRangeForBars(100, 48);
+    assert.ok(dense.to - dense.from < 110);
   });
 });

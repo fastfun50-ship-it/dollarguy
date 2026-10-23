@@ -119,9 +119,12 @@ export default function ScannerApp() {
     if (!selected) {
       setDetail(null);
       setDetailError(null);
+      setDetailLoading(false);
       return;
     }
     let cancelled = false;
+    // Clear previous ticker series immediately — no stale OHLC under new header.
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     (async () => {
@@ -208,6 +211,11 @@ export default function ScannerApp() {
   const isExample = mode === 'EXAMPLE';
 
   function selectTicker(sym: string) {
+    if (sym !== selected) {
+      setDetail(null);
+      setDetailError(null);
+      setDetailLoading(true);
+    }
     setSelected(sym);
     setMobileDetailOpen(true);
   }
@@ -420,7 +428,7 @@ export default function ScannerApp() {
       </div>
 
       {/* Body */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr] min-h-0">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_1fr] min-h-0">
         <section className="flex flex-col min-h-0 border-r border-[#1e2a3d]">
           <div className="flex gap-0.5 px-2.5 pt-2 bg-[#0f1724] border-b border-[#1e2a3d] overflow-x-auto flex-shrink-0">
             {(Object.keys(counts) as ScanTab[]).map((t) => (
@@ -645,38 +653,26 @@ function DetailPanel({
   onIntervalChange: (i: ChartInterval) => void;
   onCloseMobile: () => void;
 }) {
+  const [chartExpanded, setChartExpanded] = useState(false);
+
   if (!selected) {
     return <p className="p-4 text-[#8b9bb3]">Vælg en ticker</p>;
   }
-  if (loading && !detail) {
-    return <p className="p-4 text-[#8b9bb3]">Henter {selected}…</p>;
-  }
-  if (error && !detail) {
-    return (
-      <div className="p-4 text-sm text-red-300 space-y-2">
-        <p>{error}</p>
-        <button
-          type="button"
-          className="lg:hidden text-xs underline text-[#8b9bb3]"
-          onClick={onCloseMobile}
-        >
-          Luk
-        </button>
-      </div>
-    );
-  }
-  if (!detail) {
-    return <p className="p-4 text-[#8b9bb3]">Vælg en ticker</p>;
-  }
+
+  const c = detail?.candidate;
+  const showStats = Boolean(c) && !loading;
+  const headerSym = selected;
+  const headerName = c && c.symbol === selected ? c.name : '';
 
   return (
     <>
       <div className="p-3 border-b border-[#1e2a3d] flex-shrink-0">
         <div className="flex items-baseline gap-2.5">
-          <span className="text-xl font-extrabold tracking-wide">{detail.candidate.symbol}</span>
+          <span className="text-xl font-extrabold tracking-wide">{headerSym}</span>
           <span className="text-xs text-[#8b9bb3]">
-            {detail.candidate.name}
+            {loading ? 'Henter…' : headerName}
             {isExample ? ' · EXAMPLE' : ''}
+            {loading ? ' · loading' : ''}
           </span>
           <button
             type="button"
@@ -687,123 +683,150 @@ function DetailPanel({
             ×
           </button>
         </div>
-        <div className="mt-1">
-          <span className="text-[28px] font-bold tabular-nums">
-            ${detail.candidate.last.toFixed(2)}
-          </span>
-          <span
-            className={`text-sm font-semibold ml-2 ${
-              detail.candidate.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'
-            }`}
-          >
-            {fmtPct(detail.candidate.chgClosePct)}% (
-            {detail.candidate.chgAbs >= 0 ? '+' : ''}
-            {detail.candidate.chgAbs.toFixed(2)})
-          </span>
-        </div>
-        <div className="grid grid-cols-4 gap-1.5 mt-2.5">
-          <Stat k="Gap%" v={fmtPct(detail.candidate.gapPct)} pos={detail.candidate.gapPct >= 0} />
-          <Stat k="RVolD" v={detail.candidate.rvolDay == null ? 'ukendt' : `${fmtRvol(detail.candidate.rvolDay)}×`} />
-          <Stat
-            k="RVol5"
-            v={detail.candidate.rvol5m == null ? 'ukendt' : `${fmtRvol(detail.candidate.rvol5m)}×`}
-            pos={detail.candidate.rvol5m != null && detail.candidate.rvol5m >= 2}
-          />
-          <Stat k="Float" v={fmtVol(detail.candidate.float)} />
-        </div>
+        {showStats && c ? (
+          <>
+            <div className="mt-1">
+              <span className="text-[28px] font-bold tabular-nums">
+                ${c.last.toFixed(2)}
+              </span>
+              <span
+                className={`text-sm font-semibold ml-2 ${
+                  c.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}
+              >
+                {fmtPct(c.chgClosePct)}% (
+                {c.chgAbs >= 0 ? '+' : ''}
+                {c.chgAbs.toFixed(2)})
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5 mt-2.5">
+              <Stat k="Gap%" v={fmtPct(c.gapPct)} pos={c.gapPct >= 0} />
+              <Stat k="RVolD" v={c.rvolDay == null ? 'ukendt' : `${fmtRvol(c.rvolDay)}×`} />
+              <Stat
+                k="RVol5"
+                v={c.rvol5m == null ? 'ukendt' : `${fmtRvol(c.rvol5m)}×`}
+                pos={c.rvol5m != null && c.rvol5m >= 2}
+              />
+              <Stat k="Float" v={fmtVol(c.float)} />
+            </div>
+          </>
+        ) : (
+          <div className="mt-2 h-14 rounded bg-[#1e2a3d]/40 animate-pulse" aria-hidden />
+        )}
+        {error && !detail && (
+          <p className="mt-2 text-xs text-red-300">{error}</p>
+        )}
       </div>
 
-      <div className="flex-[0_0_auto] p-2 border-b border-[#1e2a3d]">
-        {detail.barsMeta?.error && detail.bars.length === 0 ? (
+      {/* Chart first (Alma §5) */}
+      <div className={`${chartExpanded ? 'flex-1' : 'flex-[0_0_auto]'} p-2 border-b border-[#1e2a3d]`}>
+        {error && !loading && !detail ? (
+          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-4 text-xs text-red-200">
+            {error}
+          </div>
+        ) : detail && detail.barsMeta?.error && detail.bars.length === 0 && !loading ? (
           <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-4 text-xs text-red-200 space-y-1">
             <p className="font-bold">API-fejl — kunne ikke hente IEX-minutbarer</p>
             <p className="text-red-200/80">{detail.barsMeta.error}</p>
             <p className="text-[10px] text-slate-400">{detail.barsMeta.source}</p>
           </div>
-        ) : detail.bars.length === 0 ? (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-4 text-xs text-amber-100 space-y-1">
-            <p className="font-bold">Ingen IEX-minutbarer</p>
-            <p className="text-amber-100/80">
-              {detail.barsMeta?.emptyReason ??
-                'Gyldigt svar fra Alpaca, men tom bar-serie — grafen er ikke EXAMPLE-fallback.'}
-            </p>
-            <p className="text-[10px] text-slate-400">
-              {detail.barsMeta?.source} · count={detail.barsMeta?.count ?? 0}
-            </p>
-          </div>
         ) : (
           <PriceChart
-            symbol={detail.candidate.symbol}
-            bars={detail.bars}
-            vwap={detail.vwap}
-            orHigh={detail.orHigh}
-            orLow={detail.orLow}
+            symbol={headerSym}
+            bars={loading || !detail || detail.candidate.symbol !== selected ? [] : detail.bars}
+            vwap={loading || !detail || detail.candidate.symbol !== selected ? null : detail.vwap}
+            orHigh={loading || !detail || detail.candidate.symbol !== selected ? null : detail.orHigh}
+            orLow={loading || !detail || detail.candidate.symbol !== selected ? null : detail.orLow}
             interval={chartInterval}
             onIntervalChange={onIntervalChange}
             mode={mode}
-            last={detail.candidate.last}
-            dayVolume={detail.candidate.volume}
+            last={
+              !loading && detail && detail.candidate.symbol === selected
+                ? detail.candidate.last
+                : undefined
+            }
+            dayVolume={
+              !loading && detail && detail.candidate.symbol === selected
+                ? detail.candidate.volume
+                : null
+            }
+            loading={loading}
+            expanded={chartExpanded}
+            onExpandedChange={setChartExpanded}
           />
         )}
-      </div>
-
-      <div className="p-2.5 border-b border-[#1e2a3d]">
-        <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Hvorfor fundet?</h4>
-        <ol className="list-decimal pl-4 text-xs text-slate-300 space-y-1">
-          {detail.candidate.why.map((w, i) => (
-            <li key={i}>{w}</li>
-          ))}
-        </ol>
-      </div>
-
-      <div className="p-2.5 border-b border-[#1e2a3d]">
-        <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">
-          Seneste alerts · {detail.candidate.symbol}
-        </h4>
-        {detail.alerts.length === 0 ? (
-          <p className="text-[11px] text-slate-500">Ingen</p>
-        ) : (
-          [...detail.alerts]
-            .sort((a, b) => b.tsEt.localeCompare(a.tsEt))
-            .map((a) => (
-              <div
-                key={a.id}
-                className="grid grid-cols-[54px_1fr_50px] gap-2 text-[11px] py-1 tabular-nums text-slate-300"
-              >
-                <span>{a.tsEt}</span>
-                <span>{a.message}</span>
-                <span className="text-emerald-400 text-right">{a.price.toFixed(2)}</span>
-              </div>
-            ))
+        {!loading && detail && detail.bars.length === 0 && !detail.barsMeta?.error && (
+          <p className="mt-2 text-[10px] text-amber-100/80 px-1">
+            {detail.barsMeta?.emptyReason ?? `Ingen bars for ${selected}`}
+          </p>
         )}
       </div>
 
-      <div className="p-2.5 border-b border-[#1e2a3d]">
-        <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Nyheder</h4>
-        {detail.news.map((n, i) => (
-          <div key={i} className="text-xs text-slate-300 py-1.5 border-b border-[#1e2a3d]/50">
-            <span className="text-[#8b9bb3] text-[11px] mr-2 tabular-nums">{n.when}</span>
-            {n.headline}
+      {!chartExpanded && detail && detail.candidate.symbol === selected && (
+        <>
+          <div className="p-2.5 border-b border-[#1e2a3d]">
+            <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Hvorfor fundet?</h4>
+            <ol className="list-decimal pl-4 text-xs text-slate-300 space-y-1">
+              {detail.candidate.why.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ol>
           </div>
-        ))}
-      </div>
 
-      <div className="p-2.5 flex gap-2 mt-auto">
-        <button
-          type="button"
-          className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-[#0a1018]"
-        >
-          + Watchlist
-        </button>
-        <button
-          type="button"
-          disabled
-          title="Paper-ordrer er ikke del af M1"
-          className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-transparent text-slate-500 cursor-not-allowed"
-        >
-          Paper sim — M2
-        </button>
-      </div>
+          <div className="p-2.5 border-b border-[#1e2a3d]">
+            <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">
+              Seneste alerts · {detail.candidate.symbol}
+            </h4>
+            {detail.alerts.length === 0 ? (
+              <p className="text-[11px] text-slate-500">Ingen</p>
+            ) : (
+              [...detail.alerts]
+                .sort((a, b) => b.tsEt.localeCompare(a.tsEt))
+                .map((a) => (
+                  <div
+                    key={a.id}
+                    className="grid grid-cols-[54px_1fr_50px] gap-2 text-[11px] py-1 tabular-nums text-slate-300"
+                  >
+                    <span>{a.tsEt}</span>
+                    <span>{a.message}</span>
+                    <span className="text-emerald-400 text-right">{a.price.toFixed(2)}</span>
+                  </div>
+                ))
+            )}
+          </div>
+
+          <div className="p-2.5 border-b border-[#1e2a3d]">
+            <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Nyheder</h4>
+            {detail.news.length === 0 ? (
+              <p className="text-[11px] text-slate-500">Ingen nyheder</p>
+            ) : (
+              detail.news.map((n, i) => (
+                <div key={i} className="text-xs text-slate-300 py-1.5 border-b border-[#1e2a3d]/50">
+                  <span className="text-[#8b9bb3] text-[11px] mr-2 tabular-nums">{n.when}</span>
+                  {n.headline}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="p-2.5 flex gap-2 mt-auto">
+            <button
+              type="button"
+              className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-[#0a1018]"
+            >
+              + Watchlist
+            </button>
+            <button
+              type="button"
+              disabled
+              title="Paper-ordrer er ikke del af M1"
+              className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-transparent text-slate-500 cursor-not-allowed"
+            >
+              Paper sim — M2
+            </button>
+          </div>
+        </>
+      )}
     </>
   );
 }

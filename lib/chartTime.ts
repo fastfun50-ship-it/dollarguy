@@ -100,3 +100,55 @@ export function prepareChartSeries(
   }));
   return { candles, volumes };
 }
+
+/** Running session VWAP from real bars only — no interpolated points. */
+export function computeVwapSeries(
+  bars: Bar[]
+): { time: number; value: number }[] {
+  let pv = 0;
+  let vol = 0;
+  const out: { time: number; value: number }[] = [];
+  for (const b of bars) {
+    const time = toUtcSeconds(b.t);
+    if (time <= 0) continue;
+    const typical = (b.h + b.l + b.c) / 3;
+    const v = b.v ?? 0;
+    if (!(v > 0)) continue; // skip zero-volume — do not invent VWAP
+    pv += typical * v;
+    vol += v;
+    if (vol > 0) {
+      out.push({ time, value: pv / vol });
+    }
+  }
+  // Dedupe by time (last wins)
+  const byTime = new Map<number, number>();
+  for (const p of out) byTime.set(p.time, p.value);
+  return [...byTime.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([time, value]) => ({ time, value }));
+}
+
+/**
+ * Visible logical range so sparse IEX bars stay narrow (not 3 huge blocks).
+ * Dense series (≥ minSlots) uses full fit. Never invents candles.
+ */
+export function visibleLogicalRangeForBars(
+  barCount: number,
+  minSlots = 48
+): { from: number; to: number } {
+  if (barCount <= 0) return { from: 0, to: Math.max(minSlots, 1) };
+  if (barCount >= minSlots) {
+    return { from: -0.5, to: barCount - 0.5 };
+  }
+  // Align real bars to the left; empty logical space on the right.
+  return { from: -0.5, to: minSlots - 0.5 };
+}
+
+export function formatEtShort(iso: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(iso));
+}
