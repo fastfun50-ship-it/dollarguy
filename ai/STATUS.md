@@ -1,7 +1,9 @@
 # STATUS — dollarguy
 
 - Branch: `preview/scanner-m1`
-- **Alpaca Basic LIVE verificeret** (health+scan). Data: SIP screener + IEX bars · ingen ordrer · float mangler → UI «ukendt»
-- **Bars fix:** per-symbol `getBarsOne` + `start=09:30 ET` + pagination (multi-symbol limit starved BOLT behind AAPL)
-- Chart: fitContent/setVisibleLogicalRange after load/ticker/resize; empty states (loading / API-fejl / ingen IEX-minutbarer)
-- Known: RVOL/HOD depend on IEX minute `v`; no Production; no order endpoints
+- **Alpaca Basic LIVE** — SIP screener + IEX bars; ingen ordrer; float = ukendt
+- Bars: per-symbol + RTH start + pagination (kept)
+- **Rate-limit:** universe/bars TTL 45s, single-flight, bars concurrency 2, 429 Retry-After, last-good + RATE_LIMITED/STALE UI
+- UI poll 20s (30s when limited); empty list ≠ «Ingen tickers matcher» under rate limit
+- See `docs/alpaca-rate-budget.md`
+- No Production; no EXAMPLE-fallback as live

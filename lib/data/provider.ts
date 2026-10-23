@@ -116,6 +116,13 @@ class LiveUnavailableProvider implements MarketDataProvider {
  * - DATA_PROVIDER=alpaca with keys → live Alpaca Basic adapter (IEX bars + SIP screener).
  * - DATA_PROVIDER=massive with keys → still pending (throws loud until Massive wired).
  */
+/** Process-local Alpaca provider so universe/bars TTL cache survives scan+ticker. */
+let cachedAlpacaProvider: ReturnType<typeof createAlpacaProviderFromEnv> | null = null;
+
+export function resetMarketDataProviderForTests(): void {
+  cachedAlpacaProvider = null;
+}
+
 export function getMarketDataProvider(): MarketDataProvider {
   const kind = resolveDataProviderKind();
   const forceExample =
@@ -133,14 +140,17 @@ export function getMarketDataProvider(): MarketDataProvider {
   }
 
   if (kind === 'alpaca') {
-    const alpaca = createAlpacaProviderFromEnv();
-    if (!alpaca) {
-      return new LiveUnavailableProvider(
-        kind,
-        'DATA_PROVIDER=alpaca: nøgler mangler efter check (ALPACA_API_KEY + ALPACA_API_SECRET).'
-      );
+    if (!cachedAlpacaProvider) {
+      const alpaca = createAlpacaProviderFromEnv();
+      if (!alpaca) {
+        return new LiveUnavailableProvider(
+          kind,
+          'DATA_PROVIDER=alpaca: nøgler mangler efter check (ALPACA_API_KEY + ALPACA_API_SECRET).'
+        );
+      }
+      cachedAlpacaProvider = alpaca;
     }
-    return alpaca;
+    return cachedAlpacaProvider;
   }
 
   // Massive keys present but adapter not wired yet — fail loud, never fake-as-live

@@ -2,7 +2,7 @@
 
 export type DataMode = 'EXAMPLE' | 'LIVE' | 'DELAYED';
 export type SessionPhase = 'PRE' | 'RTH' | 'AH' | 'CLOSED';
-export type FeedStatus = 'OK' | 'DOWN' | 'STALE' | 'NOT_CONFIGURED';
+export type FeedStatus = 'OK' | 'DOWN' | 'STALE' | 'RATE_LIMITED' | 'NOT_CONFIGURED';
 
 export type SignalKind =
   | 'GAP'

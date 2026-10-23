@@ -2,8 +2,8 @@ import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { runScan, getTickerDetail } from '../lib/scanner';
 import { clearAlertsForTests } from '../lib/alerts/store';
-import { clearHodStatesForTests } from '../lib/scanner';
-import { providerMeta, resolveDataProviderKind } from '../lib/data/provider';
+import { clearHodStatesForTests, clearScanCacheForTests } from '../lib/scanner';
+import { providerMeta, resolveDataProviderKind, resetMarketDataProviderForTests } from '../lib/data/provider';
 import { getSessionPhase } from '../lib/session';
 
 describe('M1 chain: data → filters → list → explanation → chart → alerts', () => {
@@ -13,6 +13,8 @@ describe('M1 chain: data → filters → list → explanation → chart → aler
     delete process.env.ALPACA_API_KEY;
     clearAlertsForTests();
     clearHodStatesForTests();
+    clearScanCacheForTests();
+    resetMarketDataProviderForTests();
   });
 
   it('defaults DATA_PROVIDER to example (not ibkr/broker)', () => {
@@ -74,6 +76,8 @@ describe('M1 chain: data → filters → list → explanation → chart → aler
     delete process.env.ALPACA_API_SECRET;
     delete process.env.FORCE_EXAMPLE;
     clearAlertsForTests();
+    clearScanCacheForTests();
+    resetMarketDataProviderForTests();
     const { status, candidates } = await runScan();
     assert.equal(candidates.length, 0);
     assert.equal(status.feed, 'NOT_CONFIGURED');
@@ -87,6 +91,8 @@ describe('M1 chain: data → filters → list → explanation → chart → aler
     delete process.env.POLYGON_API_KEY;
     delete process.env.FORCE_EXAMPLE;
     clearAlertsForTests();
+    clearScanCacheForTests();
+    resetMarketDataProviderForTests();
     const { status, candidates } = await runScan();
     assert.equal(candidates.length, 0);
     assert.equal(status.feed, 'NOT_CONFIGURED');

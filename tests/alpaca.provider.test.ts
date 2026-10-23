@@ -12,6 +12,7 @@ import {
   hasVendorKeys,
   providerMeta,
   resolveDataProviderKind,
+  resetMarketDataProviderForTests,
 } from '../lib/data/provider';
 
 const saved: Record<string, string | undefined> = {};
@@ -41,6 +42,7 @@ describe('Alpaca provider selection (no live HTTP)', () => {
     delete process.env.ALPACA_API_KEY;
     delete process.env.ALPACA_API_SECRET;
     delete process.env.ALPACA_DATA_URL;
+    resetMarketDataProviderForTests();
   });
   afterEach(() => restoreEnv());
 
@@ -174,5 +176,142 @@ describe('Alpaca client + provider with mocked fetch', () => {
     });
     const provider = new AlpacaProvider(client);
     await assert.rejects(() => provider.listUniverse(), /401|fejlede|loud/i);
+  });
+});
+
+describe('Alpaca rate-limit + cache (mocked)', () => {
+  it('getJson retries 429 using Retry-After', async () => {
+    let n = 0;
+    const fetchFn: typeof fetch = async () => {
+      n += 1;
+      if (n === 1) {
+        return new Response('too many requests', {
+          status: 429,
+          headers: { 'Retry-After': '0' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ most_actives: [{ symbol: 'ZZZ', volume: 1 }] }),
+        { status: 200 }
+      );
+    };
+    const client = new AlpacaMarketDataClient({
+      apiKey: 'k',
+      apiSecret: 's',
+      fetchFn,
+    });
+    const rows = await client.getMostActives(1);
+    assert.equal(n, 2);
+    assert.equal(rows[0]?.symbol, 'ZZZ');
+  });
+
+  it('listUniverse TTL cache + single-flight skip repeat discovery', async () => {
+    const calls: string[] = [];
+    const fetchFn: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes('/most-actives')) {
+        return new Response(
+          JSON.stringify({ most_actives: [{ symbol: 'AAA', volume: 1e6 }] }),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/movers')) {
+        return new Response(JSON.stringify({ gainers: [], losers: [] }), { status: 200 });
+      }
+      if (url.includes('/snapshots')) {
+        return new Response(
+          JSON.stringify({
+            AAA: {
+              latestTrade: { p: 4.2 },
+              dailyBar: { t: '2026-10-23T04:00:00Z', o: 3.8, h: 4.5, l: 3.7, c: 4.2, v: 900000 },
+              prevDailyBar: { t: '2026-10-22T04:00:00Z', o: 3.5, h: 3.9, l: 3.4, c: 3.6, v: 400000 },
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      if (/\/stocks\/AAA\/bars/i.test(url)) {
+        const bars = Array.from({ length: 6 }, (_, i) => ({
+          t: `2026-10-23T13:${String(30 + i).padStart(2, '0')}:00Z`,
+          o: 4,
+          h: 4.2,
+          l: 3.9,
+          c: 4.1,
+          v: 1000,
+        }));
+        return new Response(JSON.stringify({ bars }), { status: 200 });
+      }
+      return new Response('nope ' + url, { status: 500 });
+    };
+    const client = new AlpacaMarketDataClient({ apiKey: 'k', apiSecret: 's', fetchFn });
+    const provider = new AlpacaProvider(client, { topDiscovery: 5, barLimit: 20 });
+    const [a, b] = await Promise.all([provider.listUniverse(), provider.listUniverse()]);
+    assert.equal(a.length, b.length);
+    const actives = calls.filter((u) => u.includes('most-actives')).length;
+    assert.equal(actives, 1, 'single-flight should hit discovery once');
+    const after = calls.length;
+    await provider.listUniverse();
+    assert.equal(calls.length, after, 'TTL cache should not refetch');
+    const barsAgain = await provider.getBars('AAA');
+    assert.ok(barsAgain.length > 0);
+    assert.equal(calls.length, after, 'getBars should use bars cache');
+  });
+
+  it('partial bars 429 keeps other symbols + RATE_LIMITED', async () => {
+    const fetchFn: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('/most-actives')) {
+        return new Response(
+          JSON.stringify({
+            most_actives: [
+              { symbol: 'AAA', volume: 1e6 },
+              { symbol: 'BBB', volume: 9e5 },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/movers')) {
+        return new Response(JSON.stringify({ gainers: [], losers: [] }), { status: 200 });
+      }
+      if (url.includes('/snapshots')) {
+        return new Response(
+          JSON.stringify({
+            AAA: {
+              latestTrade: { p: 4.2 },
+              dailyBar: { t: '2026-10-23T04:00:00Z', o: 3.8, h: 4.5, l: 3.7, c: 4.2, v: 900000 },
+              prevDailyBar: { t: '2026-10-22T04:00:00Z', o: 3.5, h: 3.9, l: 3.4, c: 3.6, v: 400000 },
+            },
+            BBB: {
+              latestTrade: { p: 5.5 },
+              dailyBar: { t: '2026-10-23T04:00:00Z', o: 4.9, h: 5.6, l: 4.8, c: 5.5, v: 800000 },
+              prevDailyBar: { t: '2026-10-22T04:00:00Z', o: 4.5, h: 5.0, l: 4.4, c: 4.8, v: 300000 },
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      if (/\/stocks\/BBB\/bars/i.test(url)) {
+        return new Response('too many', { status: 429, headers: { 'Retry-After': '0' } });
+      }
+      if (/\/stocks\/AAA\/bars/i.test(url)) {
+        const bars = Array.from({ length: 6 }, (_, i) => ({
+          t: `2026-10-23T13:${String(30 + i).padStart(2, '0')}:00Z`,
+          o: 4,
+          h: 4.2,
+          l: 3.9,
+          c: 4.1,
+          v: 1000,
+        }));
+        return new Response(JSON.stringify({ bars }), { status: 200 });
+      }
+      return new Response('x', { status: 500 });
+    };
+    const client = new AlpacaMarketDataClient({ apiKey: 'k', apiSecret: 's', fetchFn });
+    const provider = new AlpacaProvider(client, { topDiscovery: 5, barLimit: 20 });
+    const universe = await provider.listUniverse();
+    assert.ok(universe.some((u) => u.symbol === 'AAA' && u.bars.length > 0));
+    assert.equal(provider.feedStatus, 'RATE_LIMITED');
   });
 });

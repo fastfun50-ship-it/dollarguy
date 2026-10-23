@@ -5,11 +5,16 @@
  *
  * Bars: always **per-symbol** + pagination. Multi-symbol `/v2/stocks/bars` with a
  * shared limit starves thin names when AAPL fills page 1 (Mira coverage 2026-10-23).
+ *
+ * Rate limit: getJson retries 429 with Retry-After; getBars concurrency ≤2 + in-flight dedupe.
  */
 
 import { etSessionStartIso } from '../session';
 
 export const ALPACA_DATA_HOST_DEFAULT = 'https://data.alpaca.markets';
+
+/** Max parallel per-symbol bar fetches (Basic plan). */
+export const BARS_CONCURRENCY = 2;
 
 export type FetchLike = typeof fetch;
 
@@ -43,12 +48,20 @@ export interface AlpacaSnapshotRaw {
 export class AlpacaHttpError extends Error {
   status: number;
   path: string;
-  constructor(status: number, path: string, body: string) {
+  retryAfterMs?: number;
+  constructor(status: number, path: string, body: string, retryAfterMs?: number) {
     super(`Alpaca ${status} ${path}: ${body.slice(0, 200)}`);
     this.status = status;
     this.path = path;
+    this.retryAfterMs = retryAfterMs;
     this.name = 'AlpacaHttpError';
   }
+}
+
+export function isAlpacaRateLimit(e: unknown): boolean {
+  if (e instanceof AlpacaHttpError && e.status === 429) return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return /429|too many requests|rate limit/i.test(msg);
 }
 
 export function resolveAlpacaCredentials(): { apiKey: string; apiSecret: string } | null {
@@ -67,11 +80,27 @@ export function resolveAlpacaDataBaseUrl(): string {
   return raw || ALPACA_DATA_HOST_DEFAULT;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function parseRetryAfterMs(res: Response): number | undefined {
+  const ra = res.headers.get('Retry-After');
+  if (!ra) return undefined;
+  const asInt = Number(ra);
+  if (Number.isFinite(asInt) && asInt >= 0) return Math.min(asInt * 1000, 60_000);
+  const when = Date.parse(ra);
+  if (!Number.isNaN(when)) return Math.min(Math.max(0, when - Date.now()), 60_000);
+  return undefined;
+}
+
 export class AlpacaMarketDataClient {
   private key: string;
   private secret: string;
   private base: string;
   private fetchFn: FetchLike;
+  /** In-flight dedupe for identical getBarsOne keys. */
+  private barsInflight = new Map<string, Promise<AlpacaBarRaw[]>>();
 
   constructor(cfg: AlpacaClientConfig) {
     this.key = cfg.apiKey;
@@ -96,13 +125,27 @@ export class AlpacaMarketDataClient {
         url.searchParams.set(k, String(v));
       }
     }
-    const res = await this.fetchFn(url.toString(), { headers: this.headers(), cache: 'no-store' });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new AlpacaHttpError(res.status, url.pathname + url.search, text);
+    const maxAttempts = 4;
+    let lastErr: AlpacaHttpError | undefined;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const res = await this.fetchFn(url.toString(), { headers: this.headers(), cache: 'no-store' });
+      const text = await res.text();
+      if (res.status === 429) {
+        const retryAfterMs = parseRetryAfterMs(res) ?? Math.min(1000 * 2 ** attempt, 16_000);
+        lastErr = new AlpacaHttpError(429, url.pathname + url.search, text, retryAfterMs);
+        if (attempt < maxAttempts - 1) {
+          await sleep(retryAfterMs);
+          continue;
+        }
+        throw lastErr;
+      }
+      if (!res.ok) {
+        throw new AlpacaHttpError(res.status, url.pathname + url.search, text);
+      }
+      if (!text) return {} as T;
+      return JSON.parse(text) as T;
     }
-    if (!text) return {} as T;
-    return JSON.parse(text) as T;
+    throw lastErr ?? new AlpacaHttpError(429, url.pathname, 'rate limited');
   }
 
   /** SIP screener — most actives by volume. */
@@ -148,6 +191,7 @@ export class AlpacaMarketDataClient {
 
   /**
    * Bars for many symbols via **per-symbol** requests (paginated).
+   * Concurrency capped; one symbol failure does not abort the rest.
    * Default start = today's 09:30 ET.
    */
   async getBars(opts: {
@@ -157,7 +201,7 @@ export class AlpacaMarketDataClient {
     limit?: number;
     start?: string;
     end?: string;
-  }): Promise<Record<string, AlpacaBarRaw[]>> {
+  }): Promise<{ bars: Record<string, AlpacaBarRaw[]>; rateLimited: boolean; errors: Record<string, string> }> {
     const {
       symbols,
       timeframe = '1Min',
@@ -166,21 +210,30 @@ export class AlpacaMarketDataClient {
       start = etSessionStartIso(),
       end,
     } = opts;
-    if (!symbols.length) return {};
-    const out: Record<string, AlpacaBarRaw[]> = {};
-    const concurrency = 5;
-    for (let i = 0; i < symbols.length; i += concurrency) {
-      const chunk = symbols.slice(i, i + concurrency);
-      await Promise.all(
-        chunk.map(async (sym) => {
-          out[sym] = await this.getBarsOne(sym, { timeframe, feed, limit, start, end });
-        })
-      );
-    }
-    return out;
+    const bars: Record<string, AlpacaBarRaw[]> = {};
+    const errors: Record<string, string> = {};
+    let rateLimited = false;
+    if (!symbols.length) return { bars, rateLimited, errors };
+
+    const queue = [...symbols];
+    const workers = Math.min(BARS_CONCURRENCY, queue.length);
+    const runOne = async () => {
+      while (queue.length) {
+        const sym = queue.shift()!;
+        try {
+          bars[sym] = await this.getBarsOne(sym, { timeframe, feed, limit, start, end });
+        } catch (e) {
+          bars[sym] = [];
+          errors[sym] = e instanceof Error ? e.message : String(e);
+          if (isAlpacaRateLimit(e)) rateLimited = true;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: workers }, () => runOne()));
+    return { bars, rateLimited, errors };
   }
 
-  /** Single-symbol `/v2/stocks/{symbol}/bars` with next_page_token pagination. */
+  /** Single-symbol `/v2/stocks/{symbol}/bars` with next_page_token pagination + in-flight dedupe. */
   async getBarsOne(
     symbol: string,
     opts: {
@@ -196,26 +249,39 @@ export class AlpacaMarketDataClient {
     const limit = opts.limit ?? 1000;
     const start = opts.start ?? etSessionStartIso();
     const end = opts.end;
-    const all: AlpacaBarRaw[] = [];
-    let pageToken: string | undefined;
-    for (let page = 0; page < 10; page++) {
-      const data = await this.getJson<{
-        bars?: AlpacaBarRaw[] | null;
-        next_page_token?: string | null;
-      }>(`/v2/stocks/${encodeURIComponent(symbol.toUpperCase())}/bars`, {
-        timeframe,
-        feed,
-        limit: Math.min(limit, 1000),
-        start,
-        end,
-        adjustment: 'raw',
-        page_token: pageToken,
-      });
-      all.push(...(data.bars || []));
-      pageToken = data.next_page_token || undefined;
-      if (!pageToken || all.length >= limit) break;
+    const key = `${symbol.toUpperCase()}|${timeframe}|${feed}|${limit}|${start}|${end ?? ''}`;
+    const existing = this.barsInflight.get(key);
+    if (existing) return existing;
+
+    const work = (async () => {
+      const all: AlpacaBarRaw[] = [];
+      let pageToken: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const data = await this.getJson<{
+          bars?: AlpacaBarRaw[] | null;
+          next_page_token?: string | null;
+        }>(`/v2/stocks/${encodeURIComponent(symbol.toUpperCase())}/bars`, {
+          timeframe,
+          feed,
+          limit: Math.min(limit, 1000),
+          start,
+          end,
+          adjustment: 'raw',
+          page_token: pageToken,
+        });
+        all.push(...(data.bars || []));
+        pageToken = data.next_page_token || undefined;
+        if (!pageToken || all.length >= limit) break;
+      }
+      return all.slice(0, limit);
+    })();
+
+    this.barsInflight.set(key, work);
+    try {
+      return await work;
+    } finally {
+      this.barsInflight.delete(key);
     }
-    return all.slice(0, limit);
   }
 }
 

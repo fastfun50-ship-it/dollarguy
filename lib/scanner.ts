@@ -9,6 +9,8 @@ import {
 import { getSessionPhase, formatEtTime, isRthBar, etSessionStartIso } from './session';
 import { isDbConfigured } from './db';
 import { getMarketDataProvider, providerMeta } from './data/provider';
+import { isAlpacaRateLimit } from './data/alpacaClient';
+import type { AlpacaProvider } from './data/alpacaProvider';
 import { passesUniverseFilters } from './filters';
 import {
   chgClosePct,
@@ -34,6 +36,15 @@ import { appendAlert, listAlerts, listAlertsForSymbol, seedAlerts } from './aler
 const hodStateBySymbol = new Map<string, HodState>();
 let hodStateDayEt: string | null = null;
 
+type ScanResult = { status: ScanStatus; candidates: Candidate[]; alerts: AlertEvent[] };
+let lastGoodScan: ScanResult | null = null;
+let scanInflight: Promise<ScanResult> | null = null;
+
+function rateLimitMessage(): string {
+  return 'Datahentning begrænset — Alpaca rate limit. Viser sidste gode data.';
+}
+
+
 function etTradingDay(d: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York',
@@ -55,6 +66,11 @@ export function ensureHodStateTradingDay(d: Date = new Date()): void {
 export function clearHodStatesForTests(): void {
   hodStateBySymbol.clear();
   hodStateDayEt = null;
+}
+
+export function clearScanCacheForTests(): void {
+  lastGoodScan = null;
+  scanInflight = null;
 }
 
 function vwapFromBars(bars: { c: number; v: number; h: number; l: number }[]): number | null {
@@ -163,20 +179,50 @@ export async function runScan(opts?: {
 
   const provider = getMarketDataProvider();
 
+  // Single-flight concurrent /api/scan (multi-tab) — share one compute.
+  if (scanInflight) return scanInflight;
+
+  const compute = (async (): Promise<ScanResult> => {
   let universe;
   try {
     universe = await provider.listUniverse();
   } catch (e) {
+    // Only reuse last-good for same LIVE mode (never leak EXAMPLE into alpaca-misconfig).
+    const canReuse =
+      lastGoodScan &&
+      lastGoodScan.status.mode === 'LIVE' &&
+      provider.mode === 'LIVE' &&
+      lastGoodScan.candidates.length > 0;
+    if (canReuse) {
+      return {
+        ...lastGoodScan,
+        status: {
+          ...lastGoodScan.status,
+          mode: 'LIVE',
+          feed: isAlpacaRateLimit(e) ? 'RATE_LIMITED' : 'STALE',
+          lastUpdateEt: lastGoodScan.status.lastUpdateEt,
+          message: isAlpacaRateLimit(e)
+            ? rateLimitMessage()
+            : `Feed fejl — viser sidste gode data. (${e instanceof Error ? e.message : 'fejl'})`,
+          ws: 'DOWN',
+        },
+        alerts: listAlerts(),
+      };
+    }
     return {
       status: {
         mode: meta.mode,
         session,
-        feed: 'NOT_CONFIGURED',
+        feed: isAlpacaRateLimit(e) ? 'RATE_LIMITED' : 'NOT_CONFIGURED',
         feedLabel: provider.feedLabel,
         lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
         dbConfigured: isDbConfigured(),
         ws: 'DOWN',
-        message: e instanceof Error ? e.message : 'Datafejl',
+        message: isAlpacaRateLimit(e)
+          ? rateLimitMessage()
+          : e instanceof Error
+            ? e.message
+            : 'Datafejl',
       },
       candidates: [],
       alerts: listAlerts(),
@@ -355,44 +401,71 @@ export async function runScan(opts?: {
     for (const a of newAlerts) appendAlert(a);
   }
 
-  return {
+  const feed = provider.feedStatus;
+  const liveMsg =
+    feed === 'RATE_LIMITED'
+      ? rateLimitMessage()
+      : feed === 'STALE'
+        ? 'Data kan være forældet — Alpaca delvist begrænset. Viser sidste gode data.'
+        : 'Alpaca Basic LIVE · SIP screener + IEX bars · ingen ordrer · float mangler';
+  const result: ScanResult = {
     status: {
       mode: provider.mode,
       session,
-      feed: provider.feedStatus,
+      feed,
       feedLabel: provider.feedLabel,
       lastUpdateEt:
         provider.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
       dbConfigured: isDbConfigured(),
-      ws: provider.mode === 'EXAMPLE' ? 'STUB' : 'OK',
+      ws: provider.mode === 'EXAMPLE' ? 'STUB' : feed === 'RATE_LIMITED' ? 'DOWN' : 'OK',
       message:
         provider.mode === 'EXAMPLE'
           ? 'EXAMPLE DATA — ikke live markedsdata. Vendor-keys mangler / ikke godkendt.'
           : provider.mode === 'LIVE'
-            ? 'Alpaca Basic LIVE · SIP screener + IEX bars · ingen ordrer · float mangler'
+            ? liveMsg
             : undefined,
     },
     candidates,
     alerts: listAlerts(),
   };
+  if (candidates.length > 0 && feed !== 'RATE_LIMITED') {
+    lastGoodScan = result;
+  } else if (candidates.length > 0) {
+    lastGoodScan = result;
+  }
+  return result;
+  })();
+
+  scanInflight = compute.finally(() => {
+    scanInflight = null;
+  });
+  return scanInflight;
 }
 
 export async function getTickerDetail(symbol: string): Promise<TickerDetail | null> {
   const provider = getMarketDataProvider();
   const startIso = etSessionStartIso();
-  let universe;
-  try {
-    universe = await provider.listUniverse();
-  } catch (e) {
-    // Propagate as structured empty detail via throw — route maps to 502
-    throw e instanceof Error ? e : new Error(String(e));
+  const sym = symbol.toUpperCase();
+
+  // Prefer process cache (no discovery storm). Fall back to listUniverse (TTL/single-flight).
+  let snap =
+    'findCachedSnapshot' in provider
+      ? (provider as AlpacaProvider).findCachedSnapshot?.(sym)
+      : undefined;
+  if (!snap) {
+    try {
+      const universe = await provider.listUniverse();
+      snap = universe.find((u) => u.symbol === sym);
+    } catch (e) {
+      throw e instanceof Error ? e : new Error(String(e));
+    }
   }
-  const snap = universe.find((u) => u.symbol === symbol);
   if (!snap) return null;
 
-  const scan = await runScan();
-  const candidate =
-    scan.candidates.find((c) => c.symbol === symbol) ||
+  // Reuse last scan candidate when present — avoid nested runScan → listUniverse.
+  const fromScan = lastGoodScan?.candidates.find((c) => c.symbol === sym);
+  const candidate: Candidate =
+    fromScan ||
     ({
       symbol: snap.symbol,
       name: snap.name,
@@ -405,22 +478,21 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
       volume: snap.volume,
       float: snap.float,
       signal: null,
-      ageMin: 0,
-      why: ['Matcher ikke aktive filtre'],
+      ageMin: ageMinutes(snap.bars),
+      why: [
+        'Fra cachet snapshot',
+        `RVol5 ${fmtRvol(rvol5m(snap.bars, snap.avgSlot5m))} · Float ${fmtFloat(snap.float)}`,
+      ],
     } satisfies Candidate);
 
-  // Always refetch per-symbol bars (fixes multi-symbol page starvation leftover).
+  // Bars: provider TTL cache / universe bars — only network on miss/expiry.
   let bars = snap.bars;
   let barsError: string | undefined;
   try {
-    const refetched = await provider.getBars(symbol);
-    // Authoritative per-symbol result (even if empty — do not keep starved multi-fetch []).
-    bars = refetched;
+    const got = await provider.getBars(sym);
+    bars = got;
   } catch (e) {
     barsError = e instanceof Error ? e.message : String(e);
-    if (!bars.length) {
-      // No universe bars either — surface as error meta (route still 200 with explanation)
-    }
   }
 
   const or = computeOpeningRange(bars, DEFAULT_FILTERS.orbN);

@@ -85,7 +85,12 @@ export default function ScannerApp() {
       });
       const incoming: AlertEvent[] = data.alerts ?? [];
       setAlerts([...incoming].sort((a, b) => b.tsEt.localeCompare(a.tsEt)));
-      setError(data.status?.message && data.status.feed === 'DOWN' ? data.status.message : null);
+      const feed = data.status?.feed;
+      setError(
+        data.status?.message && (feed === 'DOWN' || feed === 'NOT_CONFIGURED')
+          ? data.status.message
+          : null
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Kunne ikke hente scan');
     } finally {
@@ -95,11 +100,13 @@ export default function ScannerApp() {
 
   useEffect(() => {
     load();
+    const tickMs =
+      status?.feed === 'RATE_LIMITED' || status?.feed === 'STALE' ? 30_000 : 20_000;
     const id = setInterval(() => {
       if (!freeze) load();
-    }, 8000);
+    }, tickMs);
     return () => clearInterval(id);
-  }, [load, freeze]);
+  }, [load, freeze, status?.feed]);
 
   // Auto-select first visible candidate once
   useEffect(() => {
@@ -272,8 +279,18 @@ export default function ScannerApp() {
             </span>
           )}
           {mode === 'LIVE' && (
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded border border-emerald-400 bg-emerald-500/20 text-emerald-300 tracking-wide">
-              LIVE
+            <span
+              className={`text-[11px] font-bold px-2 py-0.5 rounded border tracking-wide ${
+                status?.feed === 'RATE_LIMITED' || status?.feed === 'STALE'
+                  ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                  : 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
+              }`}
+            >
+              {status?.feed === 'RATE_LIMITED'
+                ? 'LIVE · RATE_LIMITED'
+                : status?.feed === 'STALE'
+                  ? 'LIVE · STALE'
+                  : 'LIVE'}
             </span>
           )}
           {mode === 'DELAYED' && (
@@ -318,6 +335,13 @@ export default function ScannerApp() {
       {(error || status?.feed === 'DOWN' || status?.feed === 'NOT_CONFIGURED') && (
         <div className="px-3 py-2 text-sm bg-red-500/15 border-b border-red-500/40 text-red-200">
           {error || status?.message || 'Datafejl'}
+        </div>
+      )}
+
+      {(status?.feed === 'RATE_LIMITED' || status?.feed === 'STALE') && (
+        <div className="px-3 py-2 text-sm bg-amber-500/15 border-b border-amber-500/40 text-amber-100">
+          {status.message || 'Datahentning begrænset'}
+          {status.feed === 'RATE_LIMITED' ? ' · feed=RATE_LIMITED' : ' · feed=STALE'}
         </div>
       )}
 
@@ -416,7 +440,7 @@ export default function ScannerApp() {
 
           <div className="flex items-center gap-2 px-3 py-1.5 bg-[#0f1724] border-b border-[#1e2a3d] text-[11px] text-[#8b9bb3] flex-shrink-0">
             <strong className="text-[#e8eef7]">Kandidater</strong> · {filtered.length} match · sort:{' '}
-            <strong className="text-blue-400">Gap% ▼</strong> · refresh 8s · freeze {freeze ? 'on' : 'off'}
+            <strong className="text-blue-400">Gap% ▼</strong> · refresh {status?.feed === 'RATE_LIMITED' || status?.feed === 'STALE' ? '30s' : '20s'} · freeze {freeze ? 'on' : 'off'}
           </div>
 
           <div className="flex-1 overflow-auto min-h-0">
@@ -424,8 +448,25 @@ export default function ScannerApp() {
               <p className="p-4 text-[#8b9bb3]">Henter…</p>
             ) : filtered.length === 0 ? (
               <div className="p-6 text-sm text-[#8b9bb3] space-y-1">
-                <p className="text-[#e8eef7] font-medium">Ingen tickers matcher filtre</p>
-                <p>Prøv at sænke Gap% eller skift scan-tab. Tomt resultat ≠ datafejl.</p>
+                {status?.feed === 'RATE_LIMITED' || status?.feed === 'STALE' ? (
+                  <>
+                    <p className="text-amber-200 font-medium">Datahentning begrænset</p>
+                    <p>
+                      {status.message ||
+                        'Alpaca rate limit / forældet cache. Listen er tom midlertidigt — ikke «ingen match».'}
+                    </p>
+                  </>
+                ) : candidates.length === 0 && status?.feed !== 'OK' ? (
+                  <>
+                    <p className="text-amber-200 font-medium">Datahentning begrænset</p>
+                    <p>{status?.message || 'Ingen kandidater fra feed lige nu.'}</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[#e8eef7] font-medium">Ingen tickers matcher filtre</p>
+                    <p>Prøv at sænke Gap% eller skift scan-tab. Tomt resultat ≠ datafejl.</p>
+                  </>
+                )}
               </div>
             ) : (
               <table className="w-full border-collapse text-xs tabular-nums">
