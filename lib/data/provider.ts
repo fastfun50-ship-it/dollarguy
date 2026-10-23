@@ -7,6 +7,7 @@
 
 import type { Bar, DataMode, FeedStatus } from '../types';
 import { EXAMPLE_TICKERS, buildExampleBars, type ExampleTickerSeed } from './exampleUniverse';
+import { createAlpacaProviderFromEnv } from './alpacaProvider';
 
 export interface MarketSnapshot {
   symbol: string;
@@ -46,7 +47,9 @@ export function hasVendorKeys(kind: DataProviderKind): boolean {
     return Boolean(process.env.MASSIVE_API_KEY || process.env.POLYGON_API_KEY);
   }
   if (kind === 'alpaca') {
-    return Boolean(process.env.ALPACA_API_KEY && process.env.ALPACA_API_SECRET);
+    return Boolean(
+      (process.env.ALPACA_API_KEY || '').trim() && (process.env.ALPACA_API_SECRET || '').trim()
+    );
   }
   return false;
 }
@@ -108,13 +111,13 @@ class LiveUnavailableProvider implements MarketDataProvider {
  * Resolve provider.
  * - No keys / DATA_PROVIDER=example → EXAMPLE (explicit).
  * - DATA_PROVIDER=massive|alpaca without keys → throws loudly (caller shows error), does NOT serve fake as live.
- * - With keys → still stub in M1 until vendor wired (throws "not implemented").
+ * - DATA_PROVIDER=alpaca with keys → live Alpaca Basic adapter (IEX bars + SIP screener).
+ * - DATA_PROVIDER=massive with keys → still pending (throws loud until Massive wired).
  */
 export function getMarketDataProvider(): MarketDataProvider {
   const kind = resolveDataProviderKind();
   const forceExample =
-    process.env.FORCE_EXAMPLE === '1' ||
-    process.env.FORCE_EXAMPLE === 'true';
+    process.env.FORCE_EXAMPLE === '1' || process.env.FORCE_EXAMPLE === 'true';
 
   if (forceExample || kind === 'example') {
     return new ExampleProvider();
@@ -127,10 +130,21 @@ export function getMarketDataProvider(): MarketDataProvider {
     );
   }
 
-  // Keys present but live adapter not wired in M1 yet — fail loud, never fake-as-live
+  if (kind === 'alpaca') {
+    const alpaca = createAlpacaProviderFromEnv();
+    if (!alpaca) {
+      return new LiveUnavailableProvider(
+        kind,
+        'DATA_PROVIDER=alpaca: nøgler mangler efter check (ALPACA_API_KEY + ALPACA_API_SECRET).'
+      );
+    }
+    return alpaca;
+  }
+
+  // Massive keys present but adapter not wired yet — fail loud, never fake-as-live
   return new LiveUnavailableProvider(
     kind,
-    `DATA_PROVIDER=${kind} nøgler fundet, men live adapter er ikke implementeret i M1 endnu. Brug EXAMPLE indtil vendor er godkendt.`
+    `DATA_PROVIDER=${kind} nøgler fundet, men live adapter er ikke implementeret endnu. Brug EXAMPLE eller DATA_PROVIDER=alpaca.`
   );
 }
 
@@ -141,7 +155,7 @@ export function providerMeta(): {
   note: string;
 } {
   const kind = resolveDataProviderKind();
-  if (kind === 'example' || process.env.FORCE_EXAMPLE === '1') {
+  if (kind === 'example' || process.env.FORCE_EXAMPLE === '1' || process.env.FORCE_EXAMPLE === 'true') {
     return {
       kind: 'example',
       mode: 'EXAMPLE',
@@ -150,12 +164,20 @@ export function providerMeta(): {
     };
   }
   const keys = hasVendorKeys(kind);
+  if (kind === 'alpaca' && keys) {
+    return {
+      kind,
+      mode: 'LIVE',
+      keysPresent: true,
+      note: 'Alpaca Basic LIVE — SIP screener (most-actives/movers) + IEX bars/snapshots. Ikke fuld consolidated tape. Float mangler i feed.',
+    };
+  }
   return {
     kind,
     mode: 'LIVE',
     keysPresent: keys,
     note: keys
-      ? 'Keys present; live adapter pending M1 vendor decision.'
+      ? 'Keys present; live adapter pending for this vendor.'
       : 'Live requested but keys missing — will error, not fall back silently.',
   };
 }
