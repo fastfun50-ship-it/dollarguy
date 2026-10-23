@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx --test tests/session.test.ts tests/signals.test.ts tests/chain.integration.test.ts tests/alpaca.provider.test.ts tests/chartTime.test.ts"
+    "test": "tsx --test tests/session.test.ts tests/signals.test.ts tests/chain.integration.test.ts tests/alpaca.provider.test.ts tests/chartTime.test.ts tests/scanCache.test.ts"
   },
   "dependencies": {
     "lightweight-charts": "^4.2.3",

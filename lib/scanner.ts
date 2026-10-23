@@ -73,6 +73,11 @@ export function clearScanCacheForTests(): void {
   scanInflight = null;
 }
 
+/** Test-only: plant a prior LIVE scan for STALE/RATE_LIMITED reuse path. */
+export function seedLastGoodScanForTests(result: ScanResult): void {
+  lastGoodScan = result;
+}
+
 function vwapFromBars(bars: { c: number; v: number; h: number; l: number }[]): number | null {
   let pv = 0;
   let vol = 0;
@@ -187,46 +192,55 @@ export async function runScan(opts?: {
   try {
     universe = await provider.listUniverse();
   } catch (e) {
-    // Only reuse last-good for same LIVE mode (never leak EXAMPLE into alpaca-misconfig).
-    const canReuse =
-      lastGoodScan &&
-      lastGoodScan.status.mode === 'LIVE' &&
+    // Local validated reference — TS narrows; no spread of optional ScanResult.
+    const prior = lastGoodScan;
+    const reusePrior =
+      prior !== null &&
+      prior.status.mode === 'LIVE' &&
       provider.mode === 'LIVE' &&
-      lastGoodScan.candidates.length > 0;
-    if (canReuse && lastGoodScan) {
-      return {
-        status: {
-          ...lastGoodScan.status,
-          mode: 'LIVE',
-          feed: isAlpacaRateLimit(e) ? 'RATE_LIMITED' : 'STALE',
-          lastUpdateEt: lastGoodScan.status.lastUpdateEt,
-          message: isAlpacaRateLimit(e)
-            ? rateLimitMessage()
-            : `Feed fejl — viser sidste gode data. (${e instanceof Error ? e.message : 'fejl'})`,
-          ws: 'DOWN',
-        },
-        candidates: lastGoodScan.candidates,
+      prior.candidates.length > 0;
+    if (reusePrior) {
+      const rateLimited = isAlpacaRateLimit(e);
+      const status: ScanStatus = {
+        mode: 'LIVE',
+        session: prior.status.session,
+        feed: rateLimited ? 'RATE_LIMITED' : 'STALE',
+        feedLabel: prior.status.feedLabel,
+        lastUpdateEt: prior.status.lastUpdateEt,
+        dbConfigured: prior.status.dbConfigured,
+        ws: 'DOWN',
+        message: rateLimited
+          ? rateLimitMessage()
+          : `Feed fejl — viser sidste gode data. (${e instanceof Error ? e.message : 'fejl'})`,
+      };
+      const result: ScanResult = {
+        status,
+        candidates: prior.candidates,
         alerts: listAlerts(),
       };
+      return result;
     }
-    return {
-      status: {
-        mode: meta.mode,
-        session,
-        feed: isAlpacaRateLimit(e) ? 'RATE_LIMITED' : 'NOT_CONFIGURED',
-        feedLabel: provider.feedLabel,
-        lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
-        dbConfigured: isDbConfigured(),
-        ws: 'DOWN',
-        message: isAlpacaRateLimit(e)
-          ? rateLimitMessage()
-          : e instanceof Error
-            ? e.message
-            : 'Datafejl',
-      },
+    const rateLimited = isAlpacaRateLimit(e);
+    const status: ScanStatus = {
+      mode: meta.mode,
+      session,
+      feed: rateLimited ? 'RATE_LIMITED' : 'NOT_CONFIGURED',
+      feedLabel: provider.feedLabel,
+      lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
+      dbConfigured: isDbConfigured(),
+      ws: 'DOWN',
+      message: rateLimited
+        ? rateLimitMessage()
+        : e instanceof Error
+          ? e.message
+          : 'Datafejl',
+    };
+    const result: ScanResult = {
+      status,
       candidates: [],
       alerts: listAlerts(),
     };
+    return result;
   }
 
   if (opts?.empty) {
