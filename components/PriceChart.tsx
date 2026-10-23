@@ -2,7 +2,7 @@
 
 /**
  * PriceChart — TradingView lightweight-charts (Apache-2.0).
- * Display only; OHLC/VWAP/OR come from our documented data chain (EXAMPLE until keys).
+ * Display only; OHLC/VWAP/OR come from our documented data chain.
  * Attribution: see footer + README NOTICE.
  */
 
@@ -17,8 +17,13 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import type { Bar, DataMode } from '@/lib/types';
+import {
+  aggregateBars,
+  prepareChartSeries,
+  type ChartInterval,
+} from '@/lib/chartTime';
 
-export type ChartInterval = '1m' | '5m' | '15m' | '1t' | 'D';
+export type { ChartInterval };
 
 export interface PriceChartProps {
   symbol: string;
@@ -42,46 +47,17 @@ const GRID = '#1e2a3d';
 const MUTED = '#8b9bb3';
 const BG = '#0a1018';
 
-function aggregateBars(bars: Bar[], interval: ChartInterval): Bar[] {
-  if (interval === '1m' || bars.length === 0) return bars;
-  if (interval === 'D') {
-    const first = bars[0];
-    const last = bars[bars.length - 1];
-    let h = first.h;
-    let l = first.l;
-    let v = 0;
-    for (const b of bars) {
-      h = Math.max(h, b.h);
-      l = Math.min(l, b.l);
-      v += b.v;
-    }
-    return [{ t: first.t, o: first.o, h, l, c: last.c, v }];
+/** Fit all candles into view after layout/size is known. */
+function fitAllBars(chart: IChartApi, barCount: number) {
+  const ts = chart.timeScale();
+  ts.fitContent();
+  if (barCount > 0) {
+    // Logical range: small left/right padding so series isn't glued to the edge.
+    ts.setVisibleLogicalRange({
+      from: -0.5,
+      to: Math.max(barCount - 0.5, 0.5),
+    });
   }
-  const minutes = interval === '5m' ? 5 : interval === '15m' ? 15 : 60;
-  const out: Bar[] = [];
-  let bucket: Bar | null = null;
-  let bucketStart = -1;
-  for (const b of bars) {
-    const m = Math.floor(new Date(b.t).getTime() / 60_000);
-    const start = Math.floor(m / minutes) * minutes;
-    if (!bucket || start !== bucketStart) {
-      if (bucket) out.push(bucket);
-      bucket = { ...b };
-      bucketStart = start;
-    } else {
-      bucket.h = Math.max(bucket.h, b.h);
-      bucket.l = Math.min(bucket.l, b.l);
-      bucket.c = b.c;
-      bucket.v += b.v;
-      bucket.t = b.t;
-    }
-  }
-  if (bucket) out.push(bucket);
-  return out;
-}
-
-function toUtcTs(iso: string): UTCTimestamp {
-  return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
 
 export default function PriceChart({
@@ -101,6 +77,7 @@ export default function PriceChart({
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const priceLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
+  const barCountRef = useRef(0);
   const isExample = mode === 'EXAMPLE';
   const series = aggregateBars(bars, interval);
   const displayLast = last ?? (series.length ? series[series.length - 1].c : undefined);
@@ -130,6 +107,10 @@ export default function PriceChart({
         borderColor: GRID,
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 2,
+        barSpacing: 8,
+        minBarSpacing: 3,
+        lockVisibleTimeRangeOnResize: false,
         tickMarkFormatter: (time: UTCTimestamp) => {
           return new Intl.DateTimeFormat('en-GB', {
             timeZone: 'America/New_York',
@@ -150,7 +131,7 @@ export default function PriceChart({
           }).format(new Date(time * 1000));
         },
       },
-      width: el.clientWidth,
+      width: Math.max(el.clientWidth, 1),
       height: el.clientHeight || 240,
     });
 
@@ -181,14 +162,26 @@ export default function PriceChart({
     candleRef.current = candles;
     volRef.current = volume;
 
-    const ro = new ResizeObserver(() => {
+    const syncSizeAndFit = () => {
       if (!wrapRef.current || !chartRef.current) return;
-      chartRef.current.applyOptions({
-        width: wrapRef.current.clientWidth,
-        height: wrapRef.current.clientHeight || 240,
+      const w = wrapRef.current.clientWidth;
+      const h = wrapRef.current.clientHeight || 240;
+      if (w <= 0) return;
+      chartRef.current.applyOptions({ width: w, height: h });
+      fitAllBars(chartRef.current, barCountRef.current);
+    };
+
+    const ro = new ResizeObserver(() => {
+      // After panel open / layout settle — fit again so candles aren't stuck right.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(syncSizeAndFit);
       });
     });
     ro.observe(el);
+    // Initial layout may still be 0×0; schedule one fit after paint.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(syncSizeAndFit);
+    });
 
     return () => {
       ro.disconnect();
@@ -205,35 +198,39 @@ export default function PriceChart({
     const chart = chartRef.current;
     if (!candles || !volume || !chart) return;
 
-    const series = aggregateBars(bars, interval);
-    const displayLast = last ?? (series.length ? series[series.length - 1].c : undefined);
+    const { candles: candleData, volumes: volData } = prepareChartSeries(bars, interval);
+    barCountRef.current = candleData.length;
 
-    if (!series.length) {
+    if (!candleData.length) {
       candles.setData([]);
       volume.setData([]);
       return;
     }
 
     candles.setData(
-      series.map((b) => ({
-        time: toUtcTs(b.t),
-        open: b.o,
-        high: b.h,
-        low: b.l,
-        close: b.c,
+      candleData.map((c) => ({
+        time: c.time as UTCTimestamp,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
       }))
     );
 
     volume.setData(
-      series.map((b) => ({
-        time: toUtcTs(b.t),
-        value: b.v,
-        color: b.c >= b.o ? 'rgba(34,197,94,0.55)' : 'rgba(239,68,68,0.55)',
+      volData.map((v) => ({
+        time: v.time as UTCTimestamp,
+        value: v.value,
+        color: v.color,
       }))
     );
 
     for (const pl of priceLinesRef.current) {
-      try { candles.removePriceLine(pl); } catch { /* already gone */ }
+      try {
+        candles.removePriceLine(pl);
+      } catch {
+        /* already gone */
+      }
     }
     priceLinesRef.current = [];
 
@@ -280,8 +277,23 @@ export default function PriceChart({
       });
     }
 
-    chart.timeScale().fitContent();
-  }, [bars, interval, vwap, orHigh, orLow, last]);
+    // Fit after data + after layout (ticker change / interval / panel resize).
+    const applyFit = () => {
+      if (!chartRef.current || !wrapRef.current) return;
+      const w = wrapRef.current.clientWidth;
+      if (w > 0) {
+        chartRef.current.applyOptions({
+          width: w,
+          height: wrapRef.current.clientHeight || 240,
+        });
+      }
+      fitAllBars(chartRef.current, barCountRef.current);
+    };
+    applyFit();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(applyFit);
+    });
+  }, [bars, interval, vwap, orHigh, orLow, last, displayLast]);
 
   return (
     <div className={`flex flex-col min-h-0 ${className}`}>

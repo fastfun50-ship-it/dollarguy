@@ -347,7 +347,9 @@ export async function runScan(opts?: {
       message:
         provider.mode === 'EXAMPLE'
           ? 'EXAMPLE DATA — ikke live markedsdata. Vendor-keys mangler / ikke godkendt.'
-          : undefined,
+          : provider.mode === 'LIVE'
+            ? 'Alpaca Basic LIVE · SIP screener + IEX bars · ingen ordrer · float mangler'
+            : undefined,
     },
     candidates,
     alerts: listAlerts(),

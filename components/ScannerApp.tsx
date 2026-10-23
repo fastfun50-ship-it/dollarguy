@@ -184,7 +184,8 @@ export default function ScannerApp() {
     } as Record<ScanTab, number>;
   }, [candidates, appliedFilters]);
 
-  const mode = status?.mode ?? 'EXAMPLE';
+  // Do not default to EXAMPLE while loading — that falsely badges LIVE deploys.
+  const mode = status?.mode;
   const isExample = mode === 'EXAMPLE';
 
   function selectTicker(sym: string) {
@@ -208,7 +209,7 @@ export default function ScannerApp() {
       error={detailError}
       selected={selected}
       isExample={isExample}
-      mode={mode}
+      mode={mode ?? 'EXAMPLE'}
       chartInterval={chartInterval}
       onIntervalChange={setChartInterval}
       onCloseMobile={() => setMobileDetailOpen(false)}
