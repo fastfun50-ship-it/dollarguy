@@ -18,6 +18,6 @@ Peter Nielsen (single-user SYSTEM117).
 Auto-trading, live broker orders, full always-on worker with vendor WS, halt handling (M2), backtest P&L.
 
 ## Integrations (planned)
-- Market data: Massive (primary) or Alpaca (budget) — **subscription pending Peter**.
+- Market data: **Alpaca Basic** (Paper keys → `data.alpaca.markets`) wired for Preview when env set; Massive adapter still pending.
 - DB: Supabase/Neon when `DATABASE_URL` present; else in-memory alerts + visible “DB not configured”.
 - Worker: stub until keys/hosting decided.
