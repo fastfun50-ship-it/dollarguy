@@ -6,7 +6,7 @@ import {
   type SignalKind,
   type TickerDetail,
 } from './types';
-import { getSessionPhase, formatEtTime } from './session';
+import { getSessionPhase, formatEtTime, isRthBar } from './session';
 import { isDbConfigured } from './db';
 import { getMarketDataProvider, providerMeta } from './data/provider';
 import { passesUniverseFilters } from './filters';
@@ -161,20 +161,31 @@ export async function runScan(opts?: {
     const r5 = rvol5m(snap.bars.filter((_, i, a) => i < a.length), snap.avgSlot5m);
 
     const orb = detectOrbBreak(snap.bars, DEFAULT_FILTERS.orbN);
-    // Fresh walk for display/tagging (coherent list vs chart); persisted state only for alert cooldown.
-    const hodDisplay = detectHod(snap.bars, initialHodState(), {
+    // Walk HOD with cooldown/pullback so alerts include later highs (e.g. EXMP 6.42 @ 09:42).
+    // Persist end-state for cross-scan cooldown; fresh start each scan over the bar window.
+    let hodWalk = initialHodState();
+    let hodHits = 0;
+    const hodOpts = {
       cooldownMin: DEFAULT_FILTERS.hodCooldownMin,
       pullbackPct: DEFAULT_FILTERS.hodPullbackPct,
       rvol5m: r5,
       rvolMin: DEFAULT_FILTERS.rvol5Min,
-    });
-    const hodAlert = detectHod(snap.bars, getHodState(snap.symbol), {
-      cooldownMin: DEFAULT_FILTERS.hodCooldownMin,
-      pullbackPct: DEFAULT_FILTERS.hodPullbackPct,
-      rvol5m: r5,
-      rvolMin: DEFAULT_FILTERS.rvol5Min,
-    });
-    hodStateBySymbol.set(snap.symbol, hodAlert.nextState);
+    };
+    for (let guard = 0; guard < 32; guard++) {
+      const step = detectHod(snap.bars, hodWalk, hodOpts);
+      hodWalk = step.nextState;
+      if (!step.hit || !step.bar) break;
+      hodHits += 1;
+      newAlerts.push({
+        id: `${snap.symbol}-HOD-${step.bar.t}`,
+        tsEt: formatEtFromIso(step.bar.t),
+        symbol: snap.symbol,
+        kind: 'HOD',
+        message: `HOD — ny intraday high ${step.newHigh.toFixed(2)}`,
+        price: step.newHigh,
+      });
+    }
+    hodStateBySymbol.set(snap.symbol, hodWalk);
     const run = detectRunningUp(snap.bars, {
       k: DEFAULT_FILTERS.runK,
       x: DEFAULT_FILTERS.runX,
@@ -183,20 +194,12 @@ export async function runScan(opts?: {
 
     let signal: SignalKind | null = null;
     const why: string[] = [];
+    const rthHighs = snap.bars.filter((b) => isRthBar(b.t)).map((b) => b.h);
+    const sessionHod = rthHighs.length ? Math.max(...rthHighs) : 0;
 
-    if (hodDisplay.hit && hodDisplay.bar) {
+    if (hodHits > 0 || (snap.seed?.pattern === 'hod' && sessionHod > 0)) {
       signal = 'HOD';
-      why.push(`HOD — ny intraday high ${hodDisplay.newHigh.toFixed(2)}`);
-      if (hodAlert.hit && hodAlert.bar) {
-        newAlerts.push({
-          id: `${snap.symbol}-HOD-${hodAlert.bar.t}`,
-          tsEt: formatEtFromIso(hodAlert.bar.t),
-          symbol: snap.symbol,
-          kind: 'HOD',
-          message: `HOD — ny intraday high ${hodAlert.newHigh.toFixed(2)}`,
-          price: hodAlert.newHigh,
-        });
-      }
+      why.push(`HOD — ny intraday high ${sessionHod.toFixed(2)}`);
     } else if (orb.hit && orb.bar) {
       signal = 'ORB5';
       why.push(`ORB5 break — close > OR high ${orb.orHigh.toFixed(2)}`);
