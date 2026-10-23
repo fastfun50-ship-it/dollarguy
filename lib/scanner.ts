@@ -29,10 +29,31 @@ import { appendAlert, listAlerts, listAlertsForSymbol, seedAlerts } from './aler
 /**
  * Persistent HOD state per symbol across runScan calls (same Node process).
  * M1: in-memory only — not shared across serverless instances; reset via clearHodStatesForTests.
+ * Cleared automatically when the America/New_York trading calendar day changes.
  */
 const hodStateBySymbol = new Map<string, HodState>();
+let hodStateDayEt: string | null = null;
+
+function etTradingDay(d: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+/** Reset HOD map when ET calendar day rolls (Alice residual). */
+export function ensureHodStateTradingDay(d: Date = new Date()): void {
+  const day = etTradingDay(d);
+  if (hodStateDayEt !== day) {
+    hodStateBySymbol.clear();
+    hodStateDayEt = day;
+  }
+}
 
 function getHodState(symbol: string): HodState {
+  ensureHodStateTradingDay();
   let s = hodStateBySymbol.get(symbol);
   if (!s) {
     s = initialHodState();
@@ -43,6 +64,7 @@ function getHodState(symbol: string): HodState {
 
 export function clearHodStatesForTests(): void {
   hodStateBySymbol.clear();
+  hodStateDayEt = null;
 }
 
 function vwapFromBars(bars: { c: number; v: number; h: number; l: number }[]): number | null {
@@ -67,6 +89,7 @@ export async function runScan(opts?: {
   empty?: boolean;
   connectionDown?: boolean;
 }): Promise<{ status: ScanStatus; candidates: Candidate[]; alerts: AlertEvent[] }> {
+  ensureHodStateTradingDay();
   const meta = providerMeta();
   const session = getSessionPhase();
 

@@ -1,10 +1,35 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction, type ReactNode } from 'react';
 import Link from 'next/link';
-import type { AlertEvent, Candidate, ScanStatus, TickerDetail } from '@/lib/types';
+import type { AlertEvent, Candidate, FilterDefaults, ScanStatus, TickerDetail } from '@/lib/types';
+import { DEFAULT_FILTERS } from '@/lib/types';
+import PriceChart, { type ChartInterval } from './PriceChart';
 
 type ScanTab = 'HOD' | 'Gappers' | 'Top Gainers' | 'Running Up' | 'Rel. volumen' | 'Volumen spikes' | 'ORB';
+
+type UiFilters = FilterDefaults & {
+  includeOtc: boolean;
+  exchange: 'nyse_nasdaq' | 'all';
+  chgMinPct: number;
+  rvolDayMin: number;
+  spikeRvol5: number;
+  enableHod: boolean;
+  enableRun: boolean;
+  enableOrb: boolean;
+};
+
+const INITIAL_FILTERS: UiFilters = {
+  ...DEFAULT_FILTERS,
+  includeOtc: false,
+  exchange: 'nyse_nasdaq',
+  chgMinPct: 0,
+  rvolDayMin: 0,
+  spikeRvol5: 5,
+  enableHod: true,
+  enableRun: true,
+  enableOrb: true,
+};
 
 function fmtPct(n: number): string {
   const s = (n * 100).toFixed(1);
@@ -31,30 +56,36 @@ export default function ScannerApp() {
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<TickerDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState<ScanTab>('HOD');
   const [freeze, setFreeze] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draftFilters, setDraftFilters] = useState<UiFilters>(INITIAL_FILTERS);
+  const [appliedFilters, setAppliedFilters] = useState<UiFilters>(INITIAL_FILTERS);
+  const [chartInterval, setChartInterval] = useState<ChartInterval>('1m');
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch('/api/scan', { cache: 'no-store' });
       const data = await res.json();
       setStatus(data.status);
-      if (!freeze || candidates.length === 0) {
-        setCandidates(data.candidates ?? []);
-      }
-      setAlerts(data.alerts ?? []);
+      setCandidates((prev) => {
+        if (freeze && prev.length > 0) return prev;
+        return data.candidates ?? [];
+      });
+      const incoming: AlertEvent[] = data.alerts ?? [];
+      setAlerts([...incoming].sort((a, b) => b.tsEt.localeCompare(a.tsEt)));
       setError(data.status?.message && data.status.feed === 'DOWN' ? data.status.message : null);
-      if (!selected && data.candidates?.length) {
-        setSelected(data.candidates[0].symbol);
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Kunne ikke hente scan');
     } finally {
       setLoading(false);
     }
-  }, [freeze, candidates.length, selected]);
+  }, [freeze]);
 
   useEffect(() => {
     load();
@@ -64,20 +95,43 @@ export default function ScannerApp() {
     return () => clearInterval(id);
   }, [load, freeze]);
 
+  // Auto-select first visible candidate once
+  useEffect(() => {
+    if (selected || candidates.length === 0) return;
+    const prefer = candidates.find((c) => c.symbol === 'EXMP') ?? candidates[0];
+    setSelected(prefer.symbol);
+  }, [candidates, selected]);
+
   useEffect(() => {
     if (!selected) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
     let cancelled = false;
+    setDetailLoading(true);
+    setDetailError(null);
     (async () => {
       try {
-        const res = await fetch(`/api/ticker/${selected}`, { cache: 'no-store' });
-        if (!res.ok) return;
+        const res = await fetch(`/api/ticker/${encodeURIComponent(selected)}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          if (!cancelled) {
+            setDetail(null);
+            setDetailError(`Kunne ikke hente ${selected} (${res.status})`);
+          }
+          return;
+        }
         const data = await res.json();
         if (!cancelled) setDetail(data);
-      } catch {
-        /* detail best-effort */
+      } catch (e) {
+        if (!cancelled) {
+          setDetail(null);
+          setDetailError(e instanceof Error ? e.message : 'Detail-fejl');
+        }
+      } finally {
+        if (!cancelled) setDetailLoading(false);
       }
     })();
     return () => {
@@ -86,36 +140,93 @@ export default function ScannerApp() {
   }, [selected]);
 
   const filtered = useMemo(() => {
+    const f = appliedFilters;
     return candidates.filter((c) => {
-      if (tab === 'HOD') return c.signal === 'HOD';
-      if (tab === 'ORB') return c.signal === 'ORB5';
-      if (tab === 'Running Up') return c.signal === 'RUN';
-      if (tab === 'Volumen spikes') return c.signal === 'VS';
-      if (tab === 'Rel. volumen') return c.rvol5m >= 2;
+      if (c.last < f.priceMin || c.last > f.priceMax) return false;
+      if (c.float > f.floatMax) return false;
+      if (c.gapPct < f.gapMinPct) return false;
+      if (c.chgClosePct < f.chgMinPct) return false;
+      if (c.rvolDay < f.rvolDayMin) return false;
+
+      if (tab === 'HOD') return f.enableHod && c.signal === 'HOD';
+      if (tab === 'ORB') return f.enableOrb && c.signal === 'ORB5';
+      if (tab === 'Running Up') return f.enableRun && c.signal === 'RUN';
+      if (tab === 'Volumen spikes') return c.signal === 'VS' || c.rvol5m >= f.spikeRvol5;
+      if (tab === 'Rel. volumen') return c.rvol5m >= f.rvol5Min;
       if (tab === 'Top Gainers') return c.chgClosePct >= 0.05;
-      if (tab === 'Gappers') return c.gapPct >= 0.04;
+      if (tab === 'Gappers') return c.gapPct >= f.gapMinPct;
       return true;
     });
-  }, [candidates, tab]);
+  }, [candidates, tab, appliedFilters]);
+
+  const sortedAlerts = useMemo(
+    () => [...alerts].sort((a, b) => b.tsEt.localeCompare(a.tsEt)),
+    [alerts]
+  );
 
   const counts = useMemo(() => {
-    const all = candidates;
+    const f = appliedFilters;
+    const all = candidates.filter(
+      (c) =>
+        c.last >= f.priceMin &&
+        c.last <= f.priceMax &&
+        c.float <= f.floatMax &&
+        c.gapPct >= f.gapMinPct
+    );
     return {
       HOD: all.filter((c) => c.signal === 'HOD').length,
-      Gappers: all.filter((c) => c.gapPct >= 0.04).length,
+      Gappers: all.filter((c) => c.gapPct >= f.gapMinPct).length,
       'Top Gainers': all.filter((c) => c.chgClosePct >= 0.05).length,
       'Running Up': all.filter((c) => c.signal === 'RUN').length,
-      'Rel. volumen': all.filter((c) => c.rvol5m >= 2).length,
-      'Volumen spikes': all.filter((c) => c.signal === 'VS').length,
+      'Rel. volumen': all.filter((c) => c.rvol5m >= f.rvol5Min).length,
+      'Volumen spikes': all.filter((c) => c.signal === 'VS' || c.rvol5m >= f.spikeRvol5).length,
       ORB: all.filter((c) => c.signal === 'ORB5').length,
     } as Record<ScanTab, number>;
-  }, [candidates]);
+  }, [candidates, appliedFilters]);
 
   const mode = status?.mode ?? 'EXAMPLE';
   const isExample = mode === 'EXAMPLE';
 
+  function selectTicker(sym: string) {
+    setSelected(sym);
+    setMobileDetailOpen(true);
+  }
+
+  function applyFilters() {
+    setAppliedFilters(draftFilters);
+    setFiltersOpen(false);
+  }
+
+  function resetFilters() {
+    setDraftFilters(INITIAL_FILTERS);
+  }
+
+  const detailPanel = (
+    <DetailPanel
+      detail={detail}
+      loading={detailLoading}
+      error={detailError}
+      selected={selected}
+      isExample={isExample}
+      mode={mode}
+      chartInterval={chartInterval}
+      onIntervalChange={setChartInterval}
+      onCloseMobile={() => setMobileDetailOpen(false)}
+    />
+  );
+
   return (
     <div className="flex flex-col h-[100dvh] min-h-0 bg-[#0a1018] text-[#e8eef7]">
+      {filtersOpen && (
+        <FilterDrawer
+          draft={draftFilters}
+          setDraft={setDraftFilters}
+          onClose={() => setFiltersOpen(false)}
+          onReset={resetFilters}
+          onApply={applyFilters}
+        />
+      )}
+
       {/* Top */}
       <header className="flex items-center gap-3 md:gap-4 px-3 md:px-3.5 py-2 bg-[#0f1724] border-b border-[#1e2a3d] flex-shrink-0 flex-wrap">
         <div className="flex items-center gap-2 font-bold text-[15px]">
@@ -125,7 +236,10 @@ export default function ScannerApp() {
           DollarGuy
         </div>
         <nav className="hidden sm:flex gap-0.5">
-          <Link href="/" className="px-3 py-1.5 rounded-md text-white bg-blue-500/20 shadow-[inset_0_-2px_0_#3b82f6] font-medium">
+          <Link
+            href="/"
+            className="px-3 py-1.5 rounded-md text-white bg-blue-500/20 shadow-[inset_0_-2px_0_#3b82f6] font-medium"
+          >
             Scanner
           </Link>
           <Link href="/watchlist" className="px-3 py-1.5 rounded-md text-[#8b9bb3] font-medium">
@@ -189,23 +303,49 @@ export default function ScannerApp() {
 
       {isExample && (
         <div className="px-3 py-1.5 text-[11px] bg-pink-500/10 border-b border-pink-400/40 text-pink-200">
-          Alle kurser, tickere og hændelser er fiktive (EXMP/DEMO/…). Ikke live markedsdata — vendor-keys mangler.
+          Alle kurser, tickere og hændelser er fiktive (EXMP/DEMO/…). Ikke live markedsdata — vendor-keys
+          mangler.
         </div>
       )}
 
       {/* Filters */}
       <div className="flex items-center gap-2 px-3 py-2 bg-[#131c2c] border-b border-[#1e2a3d] flex-shrink-0 flex-wrap">
-        <Chip label="Pris" value="$1–20" />
-        <Chip label="Gap%" value="≥ 4%" />
-        <Chip label="Rel.vol" value="≥ 2× (rvol_5m)" />
-        <Chip label="Float" value="≤ 20M" />
-        <button type="button" className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-600 border border-blue-500 text-white">
+        <Chip
+          label="Pris"
+          value={`$${appliedFilters.priceMin}–${appliedFilters.priceMax}`}
+        />
+        <Chip label="Gap%" value={`≥ ${(appliedFilters.gapMinPct * 100).toFixed(0)}%`} />
+        <Chip label="Rel.vol" value={`≥ ${appliedFilters.rvol5Min}× (rvol_5m)`} />
+        <Chip label="Float" value={`≤ ${(appliedFilters.floatMax / 1e6).toFixed(0)}M`} />
+        <button
+          type="button"
+          onClick={() => {
+            setDraftFilters(appliedFilters);
+            setFiltersOpen(true);
+          }}
+          className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-600 border border-blue-500 text-white"
+          aria-expanded={filtersOpen}
+        >
           Alle filtre
         </button>
         <div className="w-px h-5 bg-[#1e2a3d]" />
         <label className="inline-flex items-center gap-1.5 text-xs bg-[#0a1018] border border-[#1e2a3d] rounded-md px-2.5 py-1">
           <span className="text-[#8b9bb3]">Preset</span>
-          <select className="bg-transparent outline-none" defaultValue="rth">
+          <select
+            className="bg-transparent outline-none"
+            defaultValue="rth"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'pm') {
+                setAppliedFilters((f) => ({ ...f, gapMinPct: 0.04 }));
+                setTab('Gappers');
+              } else if (v === 'orb') {
+                setTab('ORB');
+              } else {
+                setTab('HOD');
+              }
+            }}
+          >
             <option value="pm">Premarket gappers</option>
             <option value="rth">RTH momentum</option>
             <option value="orb">ORB only</option>
@@ -241,7 +381,8 @@ export default function ScannerApp() {
                   tab === t ? 'text-white border-blue-500' : 'text-[#8b9bb3] border-transparent'
                 }`}
               >
-                {t} <span className="text-[10px] font-medium text-[#8b9bb3] ml-1">{counts[t]}</span>
+                {t}{' '}
+                <span className="text-[10px] font-medium text-[#8b9bb3] ml-1">{counts[t]}</span>
               </button>
             ))}
           </div>
@@ -281,29 +422,54 @@ export default function ScannerApp() {
                   {filtered.map((c, i) => (
                     <tr
                       key={c.symbol}
-                      onClick={() => setSelected(c.symbol)}
+                      onClick={() => selectTicker(c.symbol)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          selectTicker(c.symbol);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-pressed={selected === c.symbol}
                       className={`cursor-pointer border-b border-[#1e2a3d]/70 hover:bg-blue-500/5 ${
-                        selected === c.symbol ? 'bg-blue-500/20 outline outline-1 outline-blue-500/35 -outline-offset-1' : ''
+                        selected === c.symbol
+                          ? 'bg-blue-500/20 outline outline-1 outline-blue-500/35 -outline-offset-1'
+                          : ''
                       }`}
                     >
                       <td className="px-2 py-1.5 text-left">{i + 1}</td>
                       <td className="px-2 py-1.5 text-left font-bold tracking-wide">{c.symbol}</td>
                       <td className="px-2 py-1.5 text-right">{c.last.toFixed(2)}</td>
-                      <td className={`px-2 py-1.5 text-right ${c.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      <td
+                        className={`px-2 py-1.5 text-right ${
+                          c.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'
+                        }`}
+                      >
                         {fmtPct(c.chgClosePct)}
                       </td>
-                      <td className={`px-2 py-1.5 text-right ${c.gapPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      <td
+                        className={`px-2 py-1.5 text-right ${
+                          c.gapPct >= 0 ? 'text-emerald-400' : 'text-red-400'
+                        }`}
+                      >
                         {fmtPct(c.gapPct)}
                       </td>
                       <td className="px-2 py-1.5 text-right">{c.rvolDay.toFixed(1)}</td>
-                      <td className={`px-2 py-1.5 text-right ${c.rvol5m >= 2 ? 'text-emerald-400' : ''}`}>
+                      <td
+                        className={`px-2 py-1.5 text-right ${c.rvol5m >= 2 ? 'text-emerald-400' : ''}`}
+                      >
                         {c.rvol5m.toFixed(1)}
                       </td>
                       <td className="px-2 py-1.5 text-right">{fmtVol(c.volume)}</td>
                       <td className="px-2 py-1.5 text-right">{fmtVol(c.float)}</td>
                       <td className="px-2 py-1.5 text-right">
                         {c.signal && (
-                          <span className={`inline-block text-[10px] font-bold px-1.5 py-0.5 rounded ${signalClass(c.signal)}`}>
+                          <span
+                            className={`inline-block text-[10px] font-bold px-1.5 py-0.5 rounded ${signalClass(
+                              c.signal
+                            )}`}
+                          >
                             {c.signal}
                           </span>
                         )}
@@ -324,13 +490,14 @@ export default function ScannerApp() {
               </span>
             </h3>
             <div className="flex-1 overflow-auto text-[11px] tabular-nums">
-              {alerts.length === 0 ? (
+              {sortedAlerts.length === 0 ? (
                 <p className="px-3 py-2 text-slate-500">Ingen alerts endnu</p>
               ) : (
-                alerts.map((a) => (
+                sortedAlerts.map((a) => (
                   <div
                     key={a.id}
-                    className="grid grid-cols-[62px_48px_1fr_56px] gap-2 px-3 py-1 border-b border-[#1e2a3d]/55 hover:bg-white/[0.02]"
+                    onClick={() => selectTicker(a.symbol)}
+                    className="grid grid-cols-[62px_48px_1fr_56px] gap-2 px-3 py-1 border-b border-[#1e2a3d]/55 hover:bg-white/[0.02] cursor-pointer"
                   >
                     <span className="text-[#8b9bb3]">{a.tsEt}</span>
                     <span className="font-bold">{a.symbol}</span>
@@ -343,109 +510,26 @@ export default function ScannerApp() {
           </div>
         </section>
 
-        {/* Detail */}
-        <aside className="hidden lg:flex flex-col min-h-0 bg-[#0f1724]">
-          {detail ? (
-            <>
-              <div className="p-3 border-b border-[#1e2a3d] flex-shrink-0">
-                <div className="flex items-baseline gap-2.5">
-                  <span className="text-xl font-extrabold tracking-wide">{detail.candidate.symbol}</span>
-                  <span className="text-xs text-[#8b9bb3]">
-                    {detail.candidate.name}
-                    {isExample ? ' · EXAMPLE' : ''}
-                  </span>
-                </div>
-                <div className="mt-1">
-                  <span className="text-[28px] font-bold tabular-nums">${detail.candidate.last.toFixed(2)}</span>
-                  <span
-                    className={`text-sm font-semibold ml-2 ${
-                      detail.candidate.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'
-                    }`}
-                  >
-                    {fmtPct(detail.candidate.chgClosePct)}
-                  </span>
-                </div>
-                <div className="grid grid-cols-4 gap-1.5 mt-2.5">
-                  <Stat k="Gap%" v={fmtPct(detail.candidate.gapPct)} pos={detail.candidate.gapPct >= 0} />
-                  <Stat k="RVolD" v={`${detail.candidate.rvolDay.toFixed(1)}×`} />
-                  <Stat k="RVol5" v={`${detail.candidate.rvol5m.toFixed(1)}×`} pos={detail.candidate.rvol5m >= 2} />
-                  <Stat k="Float" v={fmtVol(detail.candidate.float)} />
-                </div>
-              </div>
-
-              <div className="flex-[0_0_200px] p-2 border-b border-[#1e2a3d] relative">
-                <div className="absolute top-2 right-4 flex gap-2.5 text-[10px] text-[#8b9bb3]">
-                  {detail.vwap != null && (
-                    <span>
-                      <i className="inline-block w-3.5 h-0.5 bg-blue-500 align-middle mr-1" />
-                      VWAP {detail.vwap.toFixed(2)}
-                    </span>
-                  )}
-                  {detail.orHigh != null && detail.orLow != null && (
-                    <span>
-                      OR {detail.orLow.toFixed(2)}–{detail.orHigh.toFixed(2)}
-                    </span>
-                  )}
-                  <span>1m</span>
-                </div>
-                <MiniChart bars={detail.bars} orHigh={detail.orHigh} orLow={detail.orLow} />
-              </div>
-
-              <div className="p-2.5 border-b border-[#1e2a3d]">
-                <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Hvorfor fundet?</h4>
-                <ol className="list-decimal pl-4 text-xs text-slate-300 space-y-1">
-                  {detail.candidate.why.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ol>
-              </div>
-
-              <div className="p-2.5 border-b border-[#1e2a3d]">
-                <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">
-                  Seneste alerts · {detail.candidate.symbol}
-                </h4>
-                {detail.alerts.length === 0 ? (
-                  <p className="text-[11px] text-slate-500">Ingen</p>
-                ) : (
-                  detail.alerts.map((a) => (
-                    <div key={a.id} className="grid grid-cols-[54px_1fr_50px] gap-2 text-[11px] py-1 tabular-nums text-slate-300">
-                      <span>{a.tsEt}</span>
-                      <span>{a.message}</span>
-                      <span className="text-emerald-400 text-right">{a.price.toFixed(2)}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="p-2.5 border-b border-[#1e2a3d]">
-                <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Nyheder</h4>
-                {detail.news.map((n, i) => (
-                  <div key={i} className="text-xs text-slate-300 py-1.5 border-b border-[#1e2a3d]/50">
-                    <span className="text-[#8b9bb3] text-[11px] mr-2 tabular-nums">{n.when}</span>
-                    {n.headline}
-                  </div>
-                ))}
-              </div>
-
-              <div className="p-2.5 flex gap-2 mt-auto">
-                <button type="button" className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-[#0a1018]">
-                  + Watchlist
-                </button>
-                <button
-                  type="button"
-                  disabled
-                  title="Paper-ordrer er ikke del af M1"
-                  className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-transparent text-slate-500 cursor-not-allowed"
-                >
-                  Paper sim — M2
-                </button>
-              </div>
-            </>
-          ) : (
-            <p className="p-4 text-[#8b9bb3]">Vælg en ticker</p>
-          )}
+        {/* Desktop detail */}
+        <aside className="hidden lg:flex flex-col min-h-0 bg-[#0f1724] overflow-auto">
+          {detailPanel}
         </aside>
       </div>
+
+      {/* Mobile detail sheet */}
+      {mobileDetailOpen && selected && (
+        <div className="lg:hidden fixed inset-0 z-30 flex flex-col justify-end">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/55"
+            aria-label="Luk detaljer"
+            onClick={() => setMobileDetailOpen(false)}
+          />
+          <div className="relative z-10 max-h-[85dvh] overflow-auto rounded-t-xl border border-[#1e2a3d] bg-[#0f1724] shadow-2xl">
+            {detailPanel}
+          </div>
+        </div>
+      )}
 
       <footer className="flex-shrink-0 px-3.5 py-1.5 border-t border-[#1e2a3d] bg-[#0f1724] flex justify-between text-[11px] text-slate-500">
         <span>
@@ -456,6 +540,429 @@ export default function ScannerApp() {
         <span>DollarGuy · US Stock Momentum Scanner · M1 · ingen auto-handel</span>
       </footer>
     </div>
+  );
+}
+
+function DetailPanel({
+  detail,
+  loading,
+  error,
+  selected,
+  isExample,
+  mode,
+  chartInterval,
+  onIntervalChange,
+  onCloseMobile,
+}: {
+  detail: TickerDetail | null;
+  loading: boolean;
+  error: string | null;
+  selected: string | null;
+  isExample: boolean;
+  mode: ScanStatus['mode'];
+  chartInterval: ChartInterval;
+  onIntervalChange: (i: ChartInterval) => void;
+  onCloseMobile: () => void;
+}) {
+  if (!selected) {
+    return <p className="p-4 text-[#8b9bb3]">Vælg en ticker</p>;
+  }
+  if (loading && !detail) {
+    return <p className="p-4 text-[#8b9bb3]">Henter {selected}…</p>;
+  }
+  if (error && !detail) {
+    return (
+      <div className="p-4 text-sm text-red-300 space-y-2">
+        <p>{error}</p>
+        <button
+          type="button"
+          className="lg:hidden text-xs underline text-[#8b9bb3]"
+          onClick={onCloseMobile}
+        >
+          Luk
+        </button>
+      </div>
+    );
+  }
+  if (!detail) {
+    return <p className="p-4 text-[#8b9bb3]">Vælg en ticker</p>;
+  }
+
+  return (
+    <>
+      <div className="p-3 border-b border-[#1e2a3d] flex-shrink-0">
+        <div className="flex items-baseline gap-2.5">
+          <span className="text-xl font-extrabold tracking-wide">{detail.candidate.symbol}</span>
+          <span className="text-xs text-[#8b9bb3]">
+            {detail.candidate.name}
+            {isExample ? ' · EXAMPLE' : ''}
+          </span>
+          <button
+            type="button"
+            className="lg:hidden ml-auto text-[#8b9bb3] text-lg leading-none px-2"
+            onClick={onCloseMobile}
+            aria-label="Luk"
+          >
+            ×
+          </button>
+        </div>
+        <div className="mt-1">
+          <span className="text-[28px] font-bold tabular-nums">
+            ${detail.candidate.last.toFixed(2)}
+          </span>
+          <span
+            className={`text-sm font-semibold ml-2 ${
+              detail.candidate.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'
+            }`}
+          >
+            {fmtPct(detail.candidate.chgClosePct)}
+          </span>
+        </div>
+        <div className="grid grid-cols-4 gap-1.5 mt-2.5">
+          <Stat k="Gap%" v={fmtPct(detail.candidate.gapPct)} pos={detail.candidate.gapPct >= 0} />
+          <Stat k="RVolD" v={`${detail.candidate.rvolDay.toFixed(1)}×`} />
+          <Stat
+            k="RVol5"
+            v={`${detail.candidate.rvol5m.toFixed(1)}×`}
+            pos={detail.candidate.rvol5m >= 2}
+          />
+          <Stat k="Float" v={fmtVol(detail.candidate.float)} />
+        </div>
+      </div>
+
+      <div className="flex-[0_0_auto] p-2 border-b border-[#1e2a3d]">
+        <PriceChart
+          symbol={detail.candidate.symbol}
+          bars={detail.bars}
+          vwap={detail.vwap}
+          orHigh={detail.orHigh}
+          orLow={detail.orLow}
+          interval={chartInterval}
+          onIntervalChange={onIntervalChange}
+          mode={mode}
+          last={detail.candidate.last}
+        />
+      </div>
+
+      <div className="p-2.5 border-b border-[#1e2a3d]">
+        <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Hvorfor fundet?</h4>
+        <ol className="list-decimal pl-4 text-xs text-slate-300 space-y-1">
+          {detail.candidate.why.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ol>
+      </div>
+
+      <div className="p-2.5 border-b border-[#1e2a3d]">
+        <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">
+          Seneste alerts · {detail.candidate.symbol}
+        </h4>
+        {detail.alerts.length === 0 ? (
+          <p className="text-[11px] text-slate-500">Ingen</p>
+        ) : (
+          [...detail.alerts]
+            .sort((a, b) => b.tsEt.localeCompare(a.tsEt))
+            .map((a) => (
+              <div
+                key={a.id}
+                className="grid grid-cols-[54px_1fr_50px] gap-2 text-[11px] py-1 tabular-nums text-slate-300"
+              >
+                <span>{a.tsEt}</span>
+                <span>{a.message}</span>
+                <span className="text-emerald-400 text-right">{a.price.toFixed(2)}</span>
+              </div>
+            ))
+        )}
+      </div>
+
+      <div className="p-2.5 border-b border-[#1e2a3d]">
+        <h4 className="text-[11px] uppercase tracking-wider text-[#8b9bb3] mb-2">Nyheder</h4>
+        {detail.news.map((n, i) => (
+          <div key={i} className="text-xs text-slate-300 py-1.5 border-b border-[#1e2a3d]/50">
+            <span className="text-[#8b9bb3] text-[11px] mr-2 tabular-nums">{n.when}</span>
+            {n.headline}
+          </div>
+        ))}
+      </div>
+
+      <div className="p-2.5 flex gap-2 mt-auto">
+        <button
+          type="button"
+          className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-[#0a1018]"
+        >
+          + Watchlist
+        </button>
+        <button
+          type="button"
+          disabled
+          title="Paper-ordrer er ikke del af M1"
+          className="flex-1 justify-center px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-transparent text-slate-500 cursor-not-allowed"
+        >
+          Paper sim — M2
+        </button>
+      </div>
+    </>
+  );
+}
+
+function FilterDrawer({
+  draft,
+  setDraft,
+  onClose,
+  onReset,
+  onApply,
+}: {
+  draft: UiFilters;
+  setDraft: Dispatch<SetStateAction<UiFilters>>;
+  onClose: () => void;
+  onReset: () => void;
+  onApply: () => void;
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 bg-black/55 z-40"
+        aria-label="Luk filtre"
+        onClick={onClose}
+      />
+      <aside
+        className="fixed top-0 right-0 w-full max-w-[400px] h-[100dvh] bg-[#0f1724] border-l border-[#1e2a3d] z-50 flex flex-col shadow-[-12px_0_40px_rgba(0,0,0,.45)]"
+        aria-label="Alle filtre"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-[#1e2a3d]">
+          <h2 className="text-[15px] font-bold">Alle filtre</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-7 h-7 rounded-md border border-[#1e2a3d] bg-[#0a1018] text-[#8b9bb3] grid place-items-center text-base"
+          >
+            ×
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto p-3 space-y-2">
+          <FilterGroup title="1. Univers / pris" hint="universe">
+            <div className="grid grid-cols-2 gap-2">
+              <NumField
+                label="Pris min"
+                unit="$"
+                value={draft.priceMin}
+                onChange={(v) => setDraft((d) => ({ ...d, priceMin: v }))}
+              />
+              <NumField
+                label="Pris max"
+                unit="$"
+                value={draft.priceMax}
+                onChange={(v) => setDraft((d) => ({ ...d, priceMax: v }))}
+              />
+              <NumField
+                label="Float max"
+                unit="M"
+                value={draft.floatMax / 1e6}
+                onChange={(v) => setDraft((d) => ({ ...d, floatMax: v * 1e6 }))}
+              />
+              <div>
+                <div className="text-[11px] text-[#8b9bb3] mb-0.5">Exchange</div>
+                <div className="flex items-center gap-1.5 bg-[#0f1724] border border-[#1e2a3d] rounded px-2 py-1 text-[11px]">
+                  <select
+                    className="bg-transparent w-full outline-none"
+                    value={draft.exchange}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        exchange: e.target.value as UiFilters['exchange'],
+                      }))
+                    }
+                  >
+                    <option value="nyse_nasdaq">NYSE+NASDAQ</option>
+                    <option value="all">Alle listed</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <CheckRow
+              checked={draft.includeOtc}
+              label="Inkludér OTC"
+              onChange={(v) => setDraft((d) => ({ ...d, includeOtc: v }))}
+            />
+          </FilterGroup>
+
+          <FilterGroup title="2. Gap & change" hint="gap_pm / gap_open / chg_close">
+            <div className="grid grid-cols-2 gap-2">
+              <NumField
+                label="Gap% min"
+                unit="%"
+                value={draft.gapMinPct * 100}
+                onChange={(v) => setDraft((d) => ({ ...d, gapMinPct: v / 100 }))}
+              />
+              <NumField
+                label="Chg% vs close min"
+                unit="%"
+                value={draft.chgMinPct * 100}
+                onChange={(v) => setDraft((d) => ({ ...d, chgMinPct: v / 100 }))}
+              />
+            </div>
+          </FilterGroup>
+
+          <FilterGroup title="3. Volumen" hint="rvol_day · rvol_5m · spikes">
+            <div className="grid grid-cols-2 gap-2">
+              <NumField
+                label="RVolD min"
+                unit="×"
+                value={draft.rvolDayMin}
+                onChange={(v) => setDraft((d) => ({ ...d, rvolDayMin: v }))}
+              />
+              <NumField
+                label="RVol5 min"
+                unit="×"
+                value={draft.rvol5Min}
+                onChange={(v) => setDraft((d) => ({ ...d, rvol5Min: v }))}
+              />
+              <NumField
+                label="Spike RVol5"
+                unit="×"
+                value={draft.spikeRvol5}
+                onChange={(v) => setDraft((d) => ({ ...d, spikeRvol5: v }))}
+              />
+            </div>
+          </FilterGroup>
+
+          <FilterGroup title="4. Session-signaler" hint="HOD · Running Up · ORB_N">
+            <CheckRow
+              checked={draft.enableHod}
+              label={`HOD (cooldown ${draft.hodCooldownMin} min)`}
+              onChange={(v) => setDraft((d) => ({ ...d, enableHod: v }))}
+            />
+            <CheckRow
+              checked={draft.enableRun}
+              label={`Running Up (K=${draft.runK}m, X=${(draft.runX * 100).toFixed(0)}%)`}
+              onChange={(v) => setDraft((d) => ({ ...d, enableRun: v }))}
+            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <CheckRow
+                checked={draft.enableOrb}
+                label="ORB_N — N="
+                onChange={(v) => setDraft((d) => ({ ...d, enableOrb: v }))}
+              />
+              <div className="flex items-center gap-1 bg-[#0f1724] border border-[#1e2a3d] rounded px-2 py-1 text-[11px] w-[70px]">
+                <input
+                  type="number"
+                  className="bg-transparent w-full outline-none tabular-nums"
+                  value={draft.orbN}
+                  min={1}
+                  max={30}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, orbN: Number(e.target.value) || 5 }))
+                  }
+                />
+                <span className="text-slate-500">min</span>
+              </div>
+            </div>
+          </FilterGroup>
+
+          <FilterGroup title="5. Avanceret" hint="v1.1 · ikke primær scan">
+            <p className="text-[11px] text-slate-500">
+              VWAP reclaim-alert kommer i v1.1. VWAP vises som graf-overlay.
+            </p>
+          </FilterGroup>
+        </div>
+        <div className="p-3 border-t border-[#1e2a3d] flex gap-2">
+          <button
+            type="button"
+            onClick={onReset}
+            className="flex-1 px-2 py-2 rounded-md text-xs font-semibold border border-[#1e2a3d] bg-[#0a1018]"
+          >
+            Nulstil
+          </button>
+          <button
+            type="button"
+            onClick={onApply}
+            className="flex-1 px-2 py-2 rounded-md text-xs font-semibold border border-blue-500 bg-blue-600 text-white"
+          >
+            Anvend filtre
+          </button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function FilterGroup({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="border border-[#1e2a3d] rounded-md bg-[#0a1018] overflow-hidden">
+      <div className="px-2.5 py-1.5 bg-[#131c2c] text-[10px] font-bold uppercase tracking-wider text-blue-300 flex justify-between">
+        {title}
+        <span className="font-medium normal-case tracking-normal text-slate-500">{hint}</span>
+      </div>
+      <div className="px-2.5 py-2 flex flex-col gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+function NumField({
+  label,
+  unit,
+  value,
+  onChange,
+}: {
+  label: string;
+  unit: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div>
+      <div className="text-[11px] text-[#8b9bb3] mb-0.5">{label}</div>
+      <div className="flex items-center gap-1.5 bg-[#0f1724] border border-[#1e2a3d] rounded px-2 py-1 text-[11px] tabular-nums">
+        <input
+          type="number"
+          step="any"
+          className="bg-transparent w-full outline-none"
+          value={Number.isFinite(value) ? value : 0}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
+        <span className="text-slate-500">{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+function CheckRow({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className="flex items-center gap-2 text-xs text-slate-300 text-left"
+    >
+      <span
+        className={`w-3.5 h-3.5 rounded-[3px] border grid place-items-center text-[10px] ${
+          checked
+            ? 'border-blue-500 bg-blue-500/25 text-blue-300'
+            : 'border-[#1e2a3d] bg-transparent text-transparent'
+        }`}
+      >
+        ✓
+      </span>
+      {label}
+    </button>
   );
 }
 
@@ -472,60 +979,9 @@ function Stat({ k, v, pos }: { k: string; v: string; pos?: boolean }) {
   return (
     <div className="bg-[#0a1018] border border-[#1e2a3d] rounded-md px-2 py-1.5">
       <div className="text-[10px] text-[#8b9bb3] uppercase tracking-wide">{k}</div>
-      <div className={`text-[13px] font-bold tabular-nums mt-0.5 ${pos ? 'text-emerald-400' : ''}`}>{v}</div>
+      <div className={`text-[13px] font-bold tabular-nums mt-0.5 ${pos ? 'text-emerald-400' : ''}`}>
+        {v}
+      </div>
     </div>
-  );
-}
-
-function MiniChart({
-  bars,
-  orHigh,
-  orLow,
-}: {
-  bars: { o: number; h: number; l: number; c: number; v: number }[];
-  orHigh: number | null;
-  orLow: number | null;
-}) {
-  const slice = bars.slice(-30);
-  if (!slice.length) return <div className="h-[160px] text-[#8b9bb3] text-xs p-4">Ingen grafdata</div>;
-  const lows = slice.map((b) => b.l);
-  const highs = slice.map((b) => b.h);
-  const min = Math.min(...lows, orLow ?? Infinity);
-  const max = Math.max(...highs, orHigh ?? -Infinity);
-  const span = max - min || 1;
-  const W = 520;
-  const H = 160;
-  const y = (p: number) => H - 20 - ((p - min) / span) * (H - 40);
-  const bw = W / slice.length;
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[160px]" preserveAspectRatio="none" aria-hidden>
-      <line x1={0} y1={40} x2={W} y2={40} stroke="#1e2a3d" />
-      <line x1={0} y1={80} x2={W} y2={80} stroke="#1e2a3d" />
-      <line x1={0} y1={120} x2={W} y2={120} stroke="#1e2a3d" />
-      {orHigh != null && (
-        <line x1={0} y1={y(orHigh)} x2={W} y2={y(orHigh)} stroke="#a78bfa" strokeDasharray="4 3" />
-      )}
-      {orLow != null && (
-        <line x1={0} y1={y(orLow)} x2={W} y2={y(orLow)} stroke="#a78bfa" strokeDasharray="4 3" />
-      )}
-      {slice.map((b, i) => {
-        const x = i * bw + bw / 2;
-        const up = b.c >= b.o;
-        const color = up ? '#22c55e' : '#f87171';
-        return (
-          <g key={i}>
-            <line x1={x} y1={y(b.h)} x2={x} y2={y(b.l)} stroke={color} />
-            <rect
-              x={x - 3}
-              y={y(Math.max(b.o, b.c))}
-              width={6}
-              height={Math.max(1, Math.abs(y(b.o) - y(b.c)))}
-              fill={color}
-            />
-          </g>
-        );
-      })}
-    </svg>
   );
 }
