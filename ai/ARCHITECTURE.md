@@ -3,7 +3,8 @@
 ## Modules
 | Module | Path | Role |
 |---|---|---|
-| UI scanner | `components/ScannerApp.tsx`, `app/page.tsx` | Candidate list, detail, alerts, status badges |
+| UI scanner | `components/ScannerApp.tsx`, `PriceChart.tsx`, `app/page.tsx` | Candidate list, detail, alerts, status badges |
+| Chart | `components/PriceChart.tsx` + `lightweight-charts` (Apache-2.0) | Candles + volume + VWAP/OR overlays; display only |
 | BFF API | `app/api/scan`, `alerts`, `ticker/[sym]`, `health` | Server-side scan orchestration |
 | Signal engine | `lib/signals/*` | Pure ORB / HOD / RVOL / RUN / gap |
 | Market data | `lib/data/provider.ts`, `exampleUniverse.ts` | DATA_PROVIDER = market data (not broker) |
