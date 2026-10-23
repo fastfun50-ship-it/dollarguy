@@ -161,13 +161,20 @@ export async function runScan(opts?: {
     const r5 = rvol5m(snap.bars.filter((_, i, a) => i < a.length), snap.avgSlot5m);
 
     const orb = detectOrbBreak(snap.bars, DEFAULT_FILTERS.orbN);
-    const hod = detectHod(snap.bars, getHodState(snap.symbol), {
+    // Fresh walk for display/tagging (coherent list vs chart); persisted state only for alert cooldown.
+    const hodDisplay = detectHod(snap.bars, initialHodState(), {
       cooldownMin: DEFAULT_FILTERS.hodCooldownMin,
       pullbackPct: DEFAULT_FILTERS.hodPullbackPct,
       rvol5m: r5,
       rvolMin: DEFAULT_FILTERS.rvol5Min,
     });
-    hodStateBySymbol.set(snap.symbol, hod.nextState);
+    const hodAlert = detectHod(snap.bars, getHodState(snap.symbol), {
+      cooldownMin: DEFAULT_FILTERS.hodCooldownMin,
+      pullbackPct: DEFAULT_FILTERS.hodPullbackPct,
+      rvol5m: r5,
+      rvolMin: DEFAULT_FILTERS.rvol5Min,
+    });
+    hodStateBySymbol.set(snap.symbol, hodAlert.nextState);
     const run = detectRunningUp(snap.bars, {
       k: DEFAULT_FILTERS.runK,
       x: DEFAULT_FILTERS.runX,
@@ -177,17 +184,19 @@ export async function runScan(opts?: {
     let signal: SignalKind | null = null;
     const why: string[] = [];
 
-    if (hod.hit && hod.bar) {
+    if (hodDisplay.hit && hodDisplay.bar) {
       signal = 'HOD';
-      why.push(`HOD — ny intraday high ${hod.newHigh.toFixed(2)}`);
-      newAlerts.push({
-        id: `${snap.symbol}-HOD-${hod.bar.t}`,
-        tsEt: formatEtFromIso(hod.bar.t),
-        symbol: snap.symbol,
-        kind: 'HOD',
-        message: `HOD — ny intraday high ${hod.newHigh.toFixed(2)}`,
-        price: hod.newHigh,
-      });
+      why.push(`HOD — ny intraday high ${hodDisplay.newHigh.toFixed(2)}`);
+      if (hodAlert.hit && hodAlert.bar) {
+        newAlerts.push({
+          id: `${snap.symbol}-HOD-${hodAlert.bar.t}`,
+          tsEt: formatEtFromIso(hodAlert.bar.t),
+          symbol: snap.symbol,
+          kind: 'HOD',
+          message: `HOD — ny intraday high ${hodAlert.newHigh.toFixed(2)}`,
+          price: hodAlert.newHigh,
+        });
+      }
     } else if (orb.hit && orb.bar) {
       signal = 'ORB5';
       why.push(`ORB5 break — close > OR high ${orb.orHigh.toFixed(2)}`);
