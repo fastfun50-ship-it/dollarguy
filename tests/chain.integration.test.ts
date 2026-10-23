@@ -111,3 +111,38 @@ describe('alert history + hod day residual', () => {
     assert.ok(true);
   });
 });
+
+describe('EXMP Alma snapshot alignment (P2)', () => {
+  it('EXMP list/detail metrics match CHART-DESIGN-NOTE §9', async () => {
+    process.env.DATA_PROVIDER = 'example';
+    clearAlertsForTests();
+    clearHodStatesForTests();
+    const { status, candidates, alerts } = await runScan();
+    assert.equal(status.mode, 'EXAMPLE');
+    assert.equal(status.lastUpdateEt, '09:42:15');
+    assert.equal(status.session, 'RTH');
+    const exmp = candidates.find((c) => c.symbol === 'EXMP');
+    assert.ok(exmp, 'EXMP candidate');
+    assert.equal(exmp!.last, 6.42);
+    assert.equal(exmp!.chgClosePct, 0.184);
+    assert.equal(exmp!.chgAbs, 0.99);
+    assert.ok(Math.abs(exmp!.gapPct - 0.121) < 1e-9);
+    assert.equal(exmp!.rvolDay, 9.8);
+    assert.equal(exmp!.rvol5m, 6.2);
+    assert.equal(exmp!.volume, 9_800_000);
+    const detail = await getTickerDetail('EXMP');
+    assert.ok(detail);
+    assert.equal(detail!.vwap, 5.78);
+    assert.equal(detail!.orHigh, 6.12);
+    assert.equal(detail!.orLow, 5.46);
+    // Alerts in EXAMPLE story window (09:xx), newest first
+    assert.ok(alerts.length > 0);
+    for (const a of alerts) {
+      assert.match(a.tsEt, /^09:/, `alert ${a.id} should be 09:xx not wall clock`);
+    }
+    assert.ok(alerts.some((a) => a.symbol === 'EXMP' && a.kind === 'HOD'));
+    assert.ok(alerts.some((a) => a.symbol === 'EXMP' && a.kind === 'ORB5'));
+    const exmpAlerts = detail!.alerts;
+    assert.equal(exmpAlerts[0].tsEt >= exmpAlerts[exmpAlerts.length - 1].tsEt, true);
+  });
+});
