@@ -16,12 +16,16 @@ export interface HodState {
 export function detectHod(
   bars: Bar[],
   state: HodState,
-  opts: { cooldownMin?: number; pullbackPct?: number; rvol5m?: number; rvolMin?: number } = {}
+  opts: { cooldownMin?: number; pullbackPct?: number; rvol5m?: number | null; rvolMin?: number } = {}
 ): { hit: boolean; bar: Bar | null; newHigh: number; nextState: HodState } {
   const cooldownMin = opts.cooldownMin ?? 3;
   const pullbackPct = opts.pullbackPct ?? 0.005;
   const rvolMin = opts.rvolMin ?? 2;
-  const rvolOk = opts.rvol5m === undefined || opts.rvol5m >= rvolMin;
+  // null/undefined = RVol ukendt → do not block HOD on a missing metric (Peter LIVE).
+  const rvolOk =
+    opts.rvol5m === undefined ||
+    opts.rvol5m === null ||
+    opts.rvol5m >= rvolMin;
 
   const rth = bars.filter((b) => isRthBar(b.t));
   let sessionHigh = state.sessionHigh;

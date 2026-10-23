@@ -6,7 +6,7 @@ import {
   type SignalKind,
   type TickerDetail,
 } from './types';
-import { getSessionPhase, formatEtTime, isRthBar } from './session';
+import { getSessionPhase, formatEtTime, isRthBar, etSessionStartIso } from './session';
 import { isDbConfigured } from './db';
 import { getMarketDataProvider, providerMeta } from './data/provider';
 import { passesUniverseFilters } from './filters';
@@ -92,11 +92,18 @@ function applyExmpDisplay(
     prevClose: number;
     chg: number;
     gap: number;
-    rd: number;
-    r5: number;
+    rd: number | null;
+    r5: number | null;
     volume: number;
   }
-): { chg: number; chgAbs: number; gap: number; rd: number; r5: number; volume: number } {
+): {
+  chg: number;
+  chgAbs: number;
+  gap: number;
+  rd: number | null;
+  r5: number | null;
+  volume: number;
+} {
   if (symbol === 'EXMP' && mode === 'EXAMPLE') {
     return {
       chg: EXMP_SNAPSHOT.chgClosePct,
@@ -115,6 +122,17 @@ function applyExmpDisplay(
     r5: metrics.r5,
     volume: metrics.volume,
   };
+}
+
+function fmtRvol(n: number | null): string {
+  return n == null ? 'ukendt' : `${n.toFixed(1)}×`;
+}
+
+function fmtFloat(n: number | null): string {
+  if (n == null) return 'ukendt';
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
 }
 
 export async function runScan(opts?: {
@@ -190,11 +208,8 @@ export async function runScan(opts?: {
 
     const gapRaw = gapOpenPct(snap.open0930, snap.prevClose);
     const chgRaw = chgClosePct(snap.last, snap.prevClose);
-    const rdRaw = rvolDay(snap.bars, snap.avgDailyVol20d);
-    const r5Raw = rvol5m(
-      snap.bars.filter((_, i, a) => i < a.length),
-      snap.avgSlot5m
-    );
+    const rdRaw = rvolDay(snap.bars, snap.avgDailyVol20d, snap.volume);
+    const r5Raw = rvol5m(snap.bars, snap.avgSlot5m);
     const disp = applyExmpDisplay(snap.symbol, provider.mode, {
       last: snap.last,
       prevClose: snap.prevClose,
@@ -276,13 +291,13 @@ export async function runScan(opts?: {
       });
     } else if (volSpike) {
       signal = 'VS';
-      why.push(`Volumen spike — RVol5 ${r5.toFixed(1)}×`);
+      why.push(`Volumen spike — RVol5 ${fmtRvol(r5)}`);
       newAlerts.push({
         id: `${snap.symbol}-VS-${lastBar?.t ?? 'vs'}`,
         tsEt: lastBar ? formatEtFromIso(lastBar.t) : EXMP_SNAPSHOT.lastUpdateEt,
         symbol: snap.symbol,
         kind: 'VS',
-        message: `Volumen spike — RVol5 ${r5.toFixed(1)}×`,
+        message: `Volumen spike — RVol5 ${fmtRvol(r5)}`,
         price: snap.last,
       });
     } else if (snap.seed) {
@@ -303,10 +318,16 @@ export async function runScan(opts?: {
       });
     }
 
-    why.push(`RVol5 ${r5.toFixed(1)}× · Gap ${(gap * 100).toFixed(1)}%`);
+    why.push(`RVol5 ${fmtRvol(r5)} · Gap ${(gap * 100).toFixed(1)}%`);
     why.push(
-      `Pris $${snap.last.toFixed(2)} i $${DEFAULT_FILTERS.priceMin}–${DEFAULT_FILTERS.priceMax} · Float ${(snap.float / 1e6).toFixed(1)}M`
+      `Pris $${snap.last.toFixed(2)} i $${DEFAULT_FILTERS.priceMin}–${DEFAULT_FILTERS.priceMax} · Float ${fmtFloat(snap.float)}`
     );
+    if (r5 == null) {
+      why.push('RVol5 ukendt — IEX bar-volumen/slot-baseline mangler; HOD uden RVol-gate.');
+    }
+    if (snap.float == null) {
+      why.push('Float ukendt — ikke i Alpaca Basic; float-filter inaktiv for denne ticker.');
+    }
 
     candidates.push({
       symbol: snap.symbol,
@@ -358,11 +379,13 @@ export async function runScan(opts?: {
 
 export async function getTickerDetail(symbol: string): Promise<TickerDetail | null> {
   const provider = getMarketDataProvider();
+  const startIso = etSessionStartIso();
   let universe;
   try {
     universe = await provider.listUniverse();
-  } catch {
-    return null;
+  } catch (e) {
+    // Propagate as structured empty detail via throw — route maps to 502
+    throw e instanceof Error ? e : new Error(String(e));
   }
   const snap = universe.find((u) => u.symbol === symbol);
   if (!snap) return null;
@@ -377,7 +400,7 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
       chgClosePct: chgClosePct(snap.last, snap.prevClose),
       chgAbs: Number((snap.last - snap.prevClose).toFixed(2)),
       gapPct: gapOpenPct(snap.open0930, snap.prevClose),
-      rvolDay: rvolDay(snap.bars, snap.avgDailyVol20d),
+      rvolDay: rvolDay(snap.bars, snap.avgDailyVol20d, snap.volume),
       rvol5m: rvol5m(snap.bars, snap.avgSlot5m),
       volume: snap.volume,
       float: snap.float,
@@ -386,19 +409,51 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
       why: ['Matcher ikke aktive filtre'],
     } satisfies Candidate);
 
-  const or = computeOpeningRange(snap.bars, DEFAULT_FILTERS.orbN);
+  // Always refetch per-symbol bars (fixes multi-symbol page starvation leftover).
+  let bars = snap.bars;
+  let barsError: string | undefined;
+  try {
+    const refetched = await provider.getBars(symbol);
+    // Authoritative per-symbol result (even if empty — do not keep starved multi-fetch []).
+    bars = refetched;
+  } catch (e) {
+    barsError = e instanceof Error ? e.message : String(e);
+    if (!bars.length) {
+      // No universe bars either — surface as error meta (route still 200 with explanation)
+    }
+  }
 
-  // Chart bars: RTH-first for readable OR/HOD story; fall back to last 60.
-  const rthBars = snap.bars.filter((b) => isRthBar(b.t));
-  const chartBars = (rthBars.length ? rthBars : snap.bars).slice(-60);
+  const or = computeOpeningRange(bars, DEFAULT_FILTERS.orbN);
+  const rthBars = bars.filter((b) => isRthBar(b.t));
+  const chartBars = (rthBars.length ? rthBars : bars).slice(-120);
   let vwap = vwapFromBars(chartBars);
-  // Alma locked EXAMPLE snapshot: EXMP VWAP 5.78 (display contract)
   if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
     vwap = EXMP_SNAPSHOT.vwap;
   }
+
+  const sample = chartBars.length
+    ? [chartBars[0], chartBars[chartBars.length - 1]].filter(Boolean)
+    : [];
+
+  const barsMeta = {
+    count: chartBars.length,
+    sample,
+    source:
+      provider.mode === 'EXAMPLE'
+        ? 'EXAMPLE'
+        : `Alpaca IEX 1Min · start=${startIso} · per-symbol`,
+    start: startIso,
+    emptyReason:
+      chartBars.length === 0 && !barsError
+        ? `Ingen IEX-minutbarer for ${symbol} siden ${startIso} (gyldigt svar, tom serie).`
+        : undefined,
+    error: barsError,
+  };
+
   return {
     candidate,
     bars: chartBars,
+    barsMeta,
     vwap,
     orHigh: or.ready ? or.high : null,
     orLow: or.ready ? or.low : null,
@@ -412,6 +467,7 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
         : [],
   };
 }
+
 
 function formatEtFromIso(iso: string): string {
   return new Intl.DateTimeFormat('en-GB', {

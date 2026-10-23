@@ -57,10 +57,13 @@ export interface Candidate {
   /** Absolute change last − prevClose (EXMP: +0.99). */
   chgAbs: number;
   gapPct: number;
-  rvolDay: number;
-  rvol5m: number;
+  /** null = ukendt (ikke målt) — aldrig 0 som stand-in. */
+  rvolDay: number | null;
+  /** null = ukendt (fx manglende slot-baseline eller IEX bar.v=0). */
+  rvol5m: number | null;
   volume: number;
-  float: number;
+  /** null = float ikke i feed (Alpaca Basic). */
+  float: number | null;
   signal: SignalKind | null;
   ageMin: number;
   why: string[];
@@ -86,9 +89,22 @@ export interface ScanStatus {
   message?: string;
 }
 
+export interface BarsMeta {
+  count: number;
+  /** First/last sample for QA (t/o/h/l/c/v). */
+  sample: Bar[];
+  source: string;
+  start?: string;
+  /** Set when response is valid but feed returned no IEX minute bars. */
+  emptyReason?: string;
+  /** Set when Alpaca/provider call failed (not "empty"). */
+  error?: string;
+}
+
 export interface TickerDetail {
   candidate: Candidate;
   bars: Bar[];
+  barsMeta: BarsMeta;
   vwap: number | null;
   orHigh: number | null;
   orLow: number | null;

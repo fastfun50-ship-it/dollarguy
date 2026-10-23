@@ -36,10 +36,16 @@ function fmtPct(n: number): string {
   return n >= 0 ? `+${s}` : s;
 }
 
-function fmtVol(n: number): string {
+function fmtVol(n: number | null | undefined): string {
+  if (n == null) return 'ukendt';
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return String(n);
+}
+
+function fmtRvol(n: number | null | undefined): string {
+  if (n == null) return 'ukendt';
+  return n.toFixed(1);
 }
 
 function signalClass(s: string | null): string {
@@ -116,14 +122,17 @@ export default function ScannerApp() {
         const res = await fetch(`/api/ticker/${encodeURIComponent(selected)}`, {
           cache: 'no-store',
         });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (!cancelled) {
             setDetail(null);
-            setDetailError(`Kunne ikke hente ${selected} (${res.status})`);
+            const kind = data?.kind === 'api_error' ? 'API-fejl' : 'Ikke fundet';
+            setDetailError(
+              `${kind}: ${data?.error || `Kunne ikke hente ${selected} (${res.status})`}`
+            );
           }
           return;
         }
-        const data = await res.json();
         if (!cancelled) setDetail(data);
       } catch (e) {
         if (!cancelled) {
@@ -143,16 +152,17 @@ export default function ScannerApp() {
     const f = appliedFilters;
     return candidates.filter((c) => {
       if (c.last < f.priceMin || c.last > f.priceMax) return false;
-      if (c.float > f.floatMax) return false;
+      if (c.float != null && c.float > f.floatMax) return false;
       if (c.gapPct < f.gapMinPct) return false;
       if (c.chgClosePct < f.chgMinPct) return false;
-      if (c.rvolDay < f.rvolDayMin) return false;
+      if (c.rvolDay != null && c.rvolDay < f.rvolDayMin) return false;
 
       if (tab === 'HOD') return f.enableHod && c.signal === 'HOD';
       if (tab === 'ORB') return f.enableOrb && c.signal === 'ORB5';
       if (tab === 'Running Up') return f.enableRun && c.signal === 'RUN';
-      if (tab === 'Volumen spikes') return c.signal === 'VS' || c.rvol5m >= f.spikeRvol5;
-      if (tab === 'Rel. volumen') return c.rvol5m >= f.rvol5Min;
+      if (tab === 'Volumen spikes')
+        return c.signal === 'VS' || (c.rvol5m != null && c.rvol5m >= f.spikeRvol5);
+      if (tab === 'Rel. volumen') return c.rvol5m != null && c.rvol5m >= f.rvol5Min;
       if (tab === 'Top Gainers') return c.chgClosePct >= 0.05;
       if (tab === 'Gappers') return c.gapPct >= f.gapMinPct;
       return true;
@@ -170,7 +180,7 @@ export default function ScannerApp() {
       (c) =>
         c.last >= f.priceMin &&
         c.last <= f.priceMax &&
-        c.float <= f.floatMax &&
+        (c.float == null || c.float <= f.floatMax) &&
         c.gapPct >= f.gapMinPct
     );
     return {
@@ -178,8 +188,10 @@ export default function ScannerApp() {
       Gappers: all.filter((c) => c.gapPct >= f.gapMinPct).length,
       'Top Gainers': all.filter((c) => c.chgClosePct >= 0.05).length,
       'Running Up': all.filter((c) => c.signal === 'RUN').length,
-      'Rel. volumen': all.filter((c) => c.rvol5m >= f.rvol5Min).length,
-      'Volumen spikes': all.filter((c) => c.signal === 'VS' || c.rvol5m >= f.spikeRvol5).length,
+      'Rel. volumen': all.filter((c) => c.rvol5m != null && c.rvol5m >= f.rvol5Min).length,
+      'Volumen spikes': all.filter(
+        (c) => c.signal === 'VS' || (c.rvol5m != null && c.rvol5m >= f.spikeRvol5)
+      ).length,
       ORB: all.filter((c) => c.signal === 'ORB5').length,
     } as Record<ScanTab, number>;
   }, [candidates, appliedFilters]);
@@ -470,11 +482,13 @@ export default function ScannerApp() {
                       >
                         {fmtPct(c.gapPct)}
                       </td>
-                      <td className="px-2 py-1.5 text-right">{c.rvolDay.toFixed(1)}</td>
+                      <td className="px-2 py-1.5 text-right">{fmtRvol(c.rvolDay)}</td>
                       <td
-                        className={`px-2 py-1.5 text-right ${c.rvol5m >= 2 ? 'text-emerald-400' : ''}`}
+                        className={`px-2 py-1.5 text-right ${
+                          c.rvol5m != null && c.rvol5m >= 2 ? 'text-emerald-400' : ''
+                        }`}
                       >
-                        {c.rvol5m.toFixed(1)}
+                        {fmtRvol(c.rvol5m)}
                       </td>
                       <td className="px-2 py-1.5 text-right">{fmtVol(c.volume)}</td>
                       <td className="px-2 py-1.5 text-right">{fmtVol(c.float)}</td>
@@ -648,28 +662,48 @@ function DetailPanel({
         </div>
         <div className="grid grid-cols-4 gap-1.5 mt-2.5">
           <Stat k="Gap%" v={fmtPct(detail.candidate.gapPct)} pos={detail.candidate.gapPct >= 0} />
-          <Stat k="RVolD" v={`${detail.candidate.rvolDay.toFixed(1)}×`} />
+          <Stat k="RVolD" v={detail.candidate.rvolDay == null ? 'ukendt' : `${fmtRvol(detail.candidate.rvolDay)}×`} />
           <Stat
             k="RVol5"
-            v={`${detail.candidate.rvol5m.toFixed(1)}×`}
-            pos={detail.candidate.rvol5m >= 2}
+            v={detail.candidate.rvol5m == null ? 'ukendt' : `${fmtRvol(detail.candidate.rvol5m)}×`}
+            pos={detail.candidate.rvol5m != null && detail.candidate.rvol5m >= 2}
           />
           <Stat k="Float" v={fmtVol(detail.candidate.float)} />
         </div>
       </div>
 
       <div className="flex-[0_0_auto] p-2 border-b border-[#1e2a3d]">
-        <PriceChart
-          symbol={detail.candidate.symbol}
-          bars={detail.bars}
-          vwap={detail.vwap}
-          orHigh={detail.orHigh}
-          orLow={detail.orLow}
-          interval={chartInterval}
-          onIntervalChange={onIntervalChange}
-          mode={mode}
-          last={detail.candidate.last}
-        />
+        {detail.barsMeta?.error && detail.bars.length === 0 ? (
+          <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-4 text-xs text-red-200 space-y-1">
+            <p className="font-bold">API-fejl — kunne ikke hente IEX-minutbarer</p>
+            <p className="text-red-200/80">{detail.barsMeta.error}</p>
+            <p className="text-[10px] text-slate-400">{detail.barsMeta.source}</p>
+          </div>
+        ) : detail.bars.length === 0 ? (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-4 text-xs text-amber-100 space-y-1">
+            <p className="font-bold">Ingen IEX-minutbarer</p>
+            <p className="text-amber-100/80">
+              {detail.barsMeta?.emptyReason ??
+                'Gyldigt svar fra Alpaca, men tom bar-serie — grafen er ikke EXAMPLE-fallback.'}
+            </p>
+            <p className="text-[10px] text-slate-400">
+              {detail.barsMeta?.source} · count={detail.barsMeta?.count ?? 0}
+            </p>
+          </div>
+        ) : (
+          <PriceChart
+            symbol={detail.candidate.symbol}
+            bars={detail.bars}
+            vwap={detail.vwap}
+            orHigh={detail.orHigh}
+            orLow={detail.orLow}
+            interval={chartInterval}
+            onIntervalChange={onIntervalChange}
+            mode={mode}
+            last={detail.candidate.last}
+            dayVolume={detail.candidate.volume}
+          />
+        )}
       </div>
 
       <div className="p-2.5 border-b border-[#1e2a3d]">

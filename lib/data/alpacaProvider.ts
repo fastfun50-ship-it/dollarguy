@@ -2,11 +2,12 @@
  * Alpaca Basic market-data provider for M1 scanner.
  * Discovery: SIP most-actives + movers.
  * Detail/bars: IEX (not consolidated tape) — UI must show disclaimer.
- * Float is NOT in Alpaca Basic → float=0 (filter effectively open; disclaimer).
+ * Float is NOT in Alpaca Basic → float=null (ukendt; never fake 0).
  * No order / trading API usage.
  */
 
 import type { Bar } from '../types';
+import { etSessionStartIso } from '../session';
 import type { MarketDataProvider, MarketSnapshot } from './provider';
 import {
   AlpacaMarketDataClient,
@@ -19,7 +20,7 @@ import {
 const FEED_LABEL = 'ALPACA · IEX bars + SIP screener (begrænset)';
 
 function mapBar(b: AlpacaBarRaw): Bar {
-  return { t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v };
+  return { t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v ?? 0 };
 }
 
 function lastPrice(snap: AlpacaSnapshotRaw): number {
@@ -32,18 +33,20 @@ function lastPrice(snap: AlpacaSnapshotRaw): number {
   );
 }
 
-function avgSlot5mFromBars(bars: Bar[]): number {
+function avgSlot5mFromBars(bars: Bar[]): number | null {
+  const withVol = bars.filter((b) => b.v > 0);
+  if (withVol.length < 5) return null; // cannot trust slot baseline from empty IEX volumes
   if (bars.length < 5) {
-    const mean = bars.reduce((s, b) => s + b.v, 0) / Math.max(1, bars.length);
-    return mean * 5;
+    const mean = withVol.reduce((s, b) => s + b.v, 0) / withVol.length;
+    return mean > 0 ? mean * 5 : null;
   }
   const slots: number[] = [];
   for (let i = 0; i + 5 <= bars.length; i += 5) {
     let v = 0;
     for (let j = 0; j < 5; j++) v += bars[i + j].v;
-    slots.push(v);
+    if (v > 0) slots.push(v);
   }
-  if (!slots.length) return 1;
+  if (!slots.length) return null;
   return slots.reduce((a, b) => a + b, 0) / slots.length;
 }
 
@@ -58,7 +61,7 @@ export class AlpacaProvider implements MarketDataProvider {
   constructor(client: AlpacaMarketDataClient, opts?: { topDiscovery?: number; barLimit?: number }) {
     this.client = client;
     this.topDiscovery = opts?.topDiscovery ?? 40;
-    this.barLimit = opts?.barLimit ?? 120;
+    this.barLimit = opts?.barLimit ?? 1000;
   }
 
   async listUniverse(): Promise<MarketSnapshot[]> {
@@ -97,6 +100,7 @@ export class AlpacaProvider implements MarketDataProvider {
         timeframe: '1Min',
         feed: 'iex',
         limit: this.barLimit,
+        start: etSessionStartIso(),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -113,12 +117,15 @@ export class AlpacaProvider implements MarketDataProvider {
       if (!(last > 0)) continue;
       const prevClose = snap.prevDailyBar?.c ?? snap.dailyBar?.o ?? last;
       const open0930 = snap.dailyBar?.o ?? bars.find((b) => b.o > 0)?.o ?? last;
+      const barVolSum = bars.reduce((s, b) => s + b.v, 0);
       const volume =
-        snap.dailyBar?.v ??
-        bars.reduce((s, b) => s + b.v, 0);
-      // Basic has no 20d ADV — use prev day volume as rough baseline (RVOL approximate).
-      const avgDailyVol20d = Math.max(1, snap.prevDailyBar?.v ?? volume);
-      const avgSlot5m = Math.max(1, avgSlot5mFromBars(bars));
+        snap.dailyBar?.v && snap.dailyBar.v > 0
+          ? snap.dailyBar.v
+          : barVolSum;
+      // Basic has no true 20d ADV — prev day volume is a rough baseline when present.
+      const prevVol = snap.prevDailyBar?.v ?? 0;
+      const avgDailyVol20d = prevVol > 0 ? prevVol : null;
+      const avgSlot5m = avgSlot5mFromBars(bars);
 
       out.push({
         symbol: sym,
@@ -126,8 +133,8 @@ export class AlpacaProvider implements MarketDataProvider {
         last,
         prevClose,
         open0930,
-        // Float not on Alpaca Basic — 0 so floatMax filter does not false-reject.
-        float: 0,
+        // Float not on Alpaca Basic — null = ukendt (never 0 stand-in).
+        float: null,
         volume,
         avgDailyVol20d,
         avgSlot5m,
@@ -143,13 +150,13 @@ export class AlpacaProvider implements MarketDataProvider {
 
   async getBars(symbol: string): Promise<Bar[]> {
     try {
-      const data = await this.client.getBars({
-        symbols: [symbol.toUpperCase()],
+      const raw = await this.client.getBarsOne(symbol.toUpperCase(), {
         timeframe: '1Min',
         feed: 'iex',
         limit: this.barLimit,
+        start: etSessionStartIso(),
       });
-      return (data[symbol.toUpperCase()] || []).map(mapBar);
+      return raw.map(mapBar);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new Error(`Alpaca getBars(${symbol}) fejlede (loud): ${msg}`);

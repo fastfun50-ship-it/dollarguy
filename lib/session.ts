@@ -62,3 +62,47 @@ export function isWeekdayEt(d: Date = new Date()): boolean {
   }).format(d);
   return !['Sat', 'Sun'].includes(wd);
 }
+
+/** YYYY-MM-DD in America/New_York. */
+export function etCalendarDate(d: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: ET,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+/**
+ * ISO UTC for a wall-clock time on the current ET calendar day.
+ * Picks -04:00 vs -05:00 so the instant maps back to the requested ET clock.
+ */
+export function etWallTimeToUtcIso(
+  hour: number,
+  minute: number,
+  d: Date = new Date()
+): string {
+  const ymd = etCalendarDate(d);
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  for (const off of ['-04:00', '-05:00'] as const) {
+    const cand = new Date(`${ymd}T${hh}:${mm}:00${off}`);
+    if (Number.isNaN(cand.getTime())) continue;
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: ET,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    }).formatToParts(cand);
+    let h = Number(parts.find((p) => p.type === 'hour')?.value ?? -1);
+    const m = Number(parts.find((p) => p.type === 'minute')?.value ?? -1);
+    if (h === 24) h = 0;
+    if (h === hour && m === minute) return cand.toISOString();
+  }
+  return new Date(`${ymd}T${hh}:${mm}:00-04:00`).toISOString();
+}
+
+/** RTH open 09:30 ET today — default `start` for IEX 1Min bars. */
+export function etSessionStartIso(d: Date = new Date()): string {
+  return etWallTimeToUtcIso(9, 30, d);
+}

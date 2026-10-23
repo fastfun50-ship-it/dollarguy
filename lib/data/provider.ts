@@ -15,10 +15,12 @@ export interface MarketSnapshot {
   last: number;
   prevClose: number;
   open0930: number;
-  float: number;
+  /** null when vendor has no float (Alpaca Basic). */
+  float: number | null;
   volume: number;
-  avgDailyVol20d: number;
-  avgSlot5m: number;
+  avgDailyVol20d: number | null;
+  /** null when 5m slot baseline cannot be trusted. */
+  avgSlot5m: number | null;
   bars: Bar[];
   seed?: ExampleTickerSeed;
 }

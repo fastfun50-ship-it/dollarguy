@@ -2,7 +2,12 @@
  * Alpaca Market Data API client (Basic / IEX + SIP screener).
  * Host: https://data.alpaca.markets — NOT paper-api (trading).
  * No order endpoints. Fetch is injectable for unit tests (no live HTTP required).
+ *
+ * Bars: always **per-symbol** + pagination. Multi-symbol `/v2/stocks/bars` with a
+ * shared limit starves thin names when AAPL fills page 1 (Mira coverage 2026-10-23).
  */
+
+import { etSessionStartIso } from '../session';
 
 export const ALPACA_DATA_HOST_DEFAULT = 'https://data.alpaca.markets';
 
@@ -128,7 +133,6 @@ export class AlpacaMarketDataClient {
   /** IEX multi-symbol snapshots. */
   async getSnapshots(symbols: string[], feed: 'iex' | 'sip' = 'iex'): Promise<Record<string, AlpacaSnapshotRaw>> {
     if (!symbols.length) return {};
-    // Alpaca caps symbol list length; chunk
     const out: Record<string, AlpacaSnapshotRaw> = {};
     const chunkSize = 50;
     for (let i = 0; i < symbols.length; i += chunkSize) {
@@ -142,7 +146,10 @@ export class AlpacaMarketDataClient {
     return out;
   }
 
-  /** IEX bars for one or many symbols. */
+  /**
+   * Bars for many symbols via **per-symbol** requests (paginated).
+   * Default start = today's 09:30 ET.
+   */
   async getBars(opts: {
     symbols: string[];
     timeframe?: string;
@@ -151,27 +158,64 @@ export class AlpacaMarketDataClient {
     start?: string;
     end?: string;
   }): Promise<Record<string, AlpacaBarRaw[]>> {
-    const { symbols, timeframe = '1Min', feed = 'iex', limit = 200, start, end } = opts;
+    const {
+      symbols,
+      timeframe = '1Min',
+      feed = 'iex',
+      limit = 1000,
+      start = etSessionStartIso(),
+      end,
+    } = opts;
     if (!symbols.length) return {};
     const out: Record<string, AlpacaBarRaw[]> = {};
-    const chunkSize = 20;
-    for (let i = 0; i < symbols.length; i += chunkSize) {
-      const chunk = symbols.slice(i, i + chunkSize);
-      const data = await this.getJson<{ bars?: Record<string, AlpacaBarRaw[]> }>('/v2/stocks/bars', {
-        symbols: chunk.join(','),
+    const concurrency = 5;
+    for (let i = 0; i < symbols.length; i += concurrency) {
+      const chunk = symbols.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(async (sym) => {
+          out[sym] = await this.getBarsOne(sym, { timeframe, feed, limit, start, end });
+        })
+      );
+    }
+    return out;
+  }
+
+  /** Single-symbol `/v2/stocks/{symbol}/bars` with next_page_token pagination. */
+  async getBarsOne(
+    symbol: string,
+    opts: {
+      timeframe?: string;
+      feed?: 'iex' | 'sip';
+      limit?: number;
+      start?: string;
+      end?: string;
+    } = {}
+  ): Promise<AlpacaBarRaw[]> {
+    const timeframe = opts.timeframe ?? '1Min';
+    const feed = opts.feed ?? 'iex';
+    const limit = opts.limit ?? 1000;
+    const start = opts.start ?? etSessionStartIso();
+    const end = opts.end;
+    const all: AlpacaBarRaw[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const data = await this.getJson<{
+        bars?: AlpacaBarRaw[] | null;
+        next_page_token?: string | null;
+      }>(`/v2/stocks/${encodeURIComponent(symbol.toUpperCase())}/bars`, {
         timeframe,
         feed,
-        limit,
+        limit: Math.min(limit, 1000),
         start,
         end,
         adjustment: 'raw',
+        page_token: pageToken,
       });
-      const bars = data.bars || {};
-      for (const [sym, arr] of Object.entries(bars)) {
-        out[sym] = arr;
-      }
+      all.push(...(data.bars || []));
+      pageToken = data.next_page_token || undefined;
+      if (!pageToken || all.length >= limit) break;
     }
-    return out;
+    return all.slice(0, limit);
   }
 }
 

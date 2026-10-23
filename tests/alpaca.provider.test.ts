@@ -127,28 +127,21 @@ describe('Alpaca client + provider with mocked fetch', () => {
           { status: 200 }
         );
       }
-      if (url.includes('/stocks/bars')) {
-        const mk = (c: number) => [
-          {
-            t: '2026-10-23T13:30:00Z',
-            o: c - 0.1,
-            h: c + 0.1,
-            l: c - 0.2,
-            c,
-            v: 10000,
-          },
-          {
-            t: '2026-10-23T13:31:00Z',
-            o: c,
-            h: c + 0.2,
-            l: c - 0.05,
-            c: c + 0.05,
-            v: 12000,
-          },
+      // Per-symbol: /v2/stocks/AAA/bars (array), not multi /v2/stocks/bars
+      const symBars = url.match(/\/stocks\/([A-Z]+)\/bars/i);
+      if (symBars) {
+        const sym = symBars[1].toUpperCase();
+        const c = sym === 'BBB' ? 5.5 : 4.2;
+        const mk = [
+          { t: '2026-10-23T13:30:00Z', o: c - 0.1, h: c + 0.1, l: c - 0.2, c, v: 10000 },
+          { t: '2026-10-23T13:31:00Z', o: c, h: c + 0.2, l: c - 0.05, c: c + 0.05, v: 12000 },
         ];
-        return new Response(JSON.stringify({ bars: { AAA: mk(4.2), BBB: mk(5.5) } }), {
-          status: 200,
-        });
+        // Need 5 bars with v>0 for avgSlot5m / rvol paths that require volume
+        const bars = [...mk, ...mk, ...mk].slice(0, 6).map((b, i) => ({
+          ...b,
+          t: `2026-10-23T13:${String(30 + i).padStart(2, '0')}:00Z`,
+        }));
+        return new Response(JSON.stringify({ bars, next_page_token: null }), { status: 200 });
       }
       return new Response('unexpected ' + url, { status: 500 });
     };

@@ -9,12 +9,20 @@ export async function GET(
   ctx: { params: { sym: string } }
 ) {
   const sym = decodeURIComponent(ctx.params.sym).toUpperCase();
-  const detail = await getTickerDetail(sym);
-  if (!detail) {
+  try {
+    const detail = await getTickerDetail(sym);
+    if (!detail) {
+      return NextResponse.json(
+        { error: 'Ticker ikke fundet i universe', symbol: sym, kind: 'not_found' },
+        { status: 404 }
+      );
+    }
+    return NextResponse.json(detail);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     return NextResponse.json(
-      { error: 'Ticker ikke fundet', symbol: sym },
-      { status: 404 }
+      { error: message, symbol: sym, kind: 'api_error' },
+      { status: 502 }
     );
   }
-  return NextResponse.json(detail);
 }

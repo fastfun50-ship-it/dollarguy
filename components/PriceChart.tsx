@@ -35,6 +35,8 @@ export interface PriceChartProps {
   onIntervalChange?: (i: ChartInterval) => void;
   mode: DataMode;
   last?: number;
+  /** Day volume from snapshot (list) — shown when last bar.v is 0. */
+  dayVolume?: number | null;
   className?: string;
 }
 
@@ -70,6 +72,7 @@ export default function PriceChart({
   onIntervalChange,
   mode,
   last,
+  dayVolume,
   className = '',
 }: PriceChartProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -82,6 +85,16 @@ export default function PriceChart({
   const series = aggregateBars(bars, interval);
   const displayLast = last ?? (series.length ? series[series.length - 1].c : undefined);
   const lastVol = series.length ? series[series.length - 1].v : 0;
+  const seriesVolSum = series.reduce((s, b) => s + b.v, 0);
+  const volLabel = (() => {
+    const pick =
+      lastVol > 0 ? lastVol : seriesVolSum > 0 ? seriesVolSum : dayVolume ?? 0;
+    const tag =
+      lastVol > 0 ? 'sidste bar' : seriesVolSum > 0 ? 'bars sum' : dayVolume ? 'dag' : '—';
+    const txt =
+      pick >= 1e6 ? `${(pick / 1e6).toFixed(1)}M` : pick >= 1e3 ? `${(pick / 1e3).toFixed(1)}K` : String(pick);
+    return `Volumen ${txt} (${tag}) · ET`;
+  })();
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -322,9 +335,7 @@ export default function PriceChart({
             EXAMPLE
           </span>
         )}
-        <span className="ml-auto text-[10px] text-[#8b9bb3] tabular-nums">
-          Volumen {lastVol >= 1e6 ? `${(lastVol / 1e6).toFixed(1)}M` : `${(lastVol / 1e3).toFixed(1)}K`} · ET
-        </span>
+        <span className="ml-auto text-[10px] text-[#8b9bb3] tabular-nums">{volLabel}</span>
       </div>
       <div
         ref={wrapRef}

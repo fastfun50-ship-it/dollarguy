@@ -131,7 +131,7 @@ describe('rvol', () => {
       bar(`09:4${i}:00`, 1, 1, 1, 1, 10_000)
     );
     assert.equal(rvol5m(bars, 10_000), 5);
-    assert.equal(rvol5m(bars, null), 0);
+    assert.equal(rvol5m(bars, null), null);
   });
 
   it('rvol_day divides by 20d avg', () => {
