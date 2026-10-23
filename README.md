@@ -1,23 +1,25 @@
 # DollarGuy
 
-Paper trading scanner + backtest system.
+US stock momentum scanner (research). **No auto-trading.**
 
-## Stack
-- Vercel
-- Supabase (Postgres)
-- IBKR Paper (data + orders)
-- Domain: dollarguy.system117.dk
+## M1
+- Scanner UI (Danish) with mandatory **EXAMPLE DATA** badge when synthetic.
+- Signal engine: ORB5 close-break, HOD (RTH + cooldown), rvol_5m default.
+- Default `DATA_PROVIDER=example` (market data — not broker).
+- Backtest route: comes in M2.
 
-## Structure
-- `lib/dataProvider.ts` — switchable data source
-- `lib/signals.ts` — technical signals (toggleable)
-- `lib/backtest.ts` — run tests on historical data
-- `schema.sql` — Supabase tables for signals, runs, results
+## Develop
+```bash
+npm install
+npm test
+npm run dev
+```
 
-## Plan
-1. Scanner + signals run in 09:35–10:35 ET window
-2. Backtest uses historical API data (no self-recording)
-3. Research bots can analyze results and suggest better signal combinations
-4. Dashboard shows what is enabled and clear P&L per test
+## Env (names only)
+- `DATA_PROVIDER` — `example` | `massive` | `alpaca` (default `example`)
+- `FORCE_EXAMPLE=1` — force EXAMPLE even if other provider set
+- `MASSIVE_API_KEY` / `POLYGON_API_KEY` — when Massive approved
+- `ALPACA_API_KEY` + `ALPACA_API_SECRET` — when Alpaca data approved
+- `DATABASE_URL` / `SUPABASE_DB_URL` / `POSTGRES_URL` — optional; else “DB not configured”
 
-**Paper only.**
+See `AI-ENTRY.md` and `/ai/*`.
