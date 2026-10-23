@@ -315,6 +315,13 @@ export default function ScannerApp() {
         </div>
       )}
 
+      {mode === 'LIVE' && (
+        <div className="px-3 py-1.5 text-[11px] bg-sky-500/10 border-b border-sky-400/40 text-sky-200">
+          LIVE Alpaca Basic — discovery via SIP screener (most-actives/movers); bars/snapshots ={' '}
+          <strong>IEX</strong> (~ikke fuld markedsvolumen). Float findes ikke i feed. Ingen ordreafgivelse.
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex items-center gap-2 px-3 py-2 bg-[#131c2c] border-b border-[#1e2a3d] flex-shrink-0 flex-wrap">
         <Chip

@@ -68,6 +68,19 @@ describe('M1 chain: data → filters → list → explanation → chart → aler
     assert.equal(status.ws, 'DOWN');
   });
 
+  it('alpaca without keys fails loud (no silent fake-as-live)', async () => {
+    process.env.DATA_PROVIDER = 'alpaca';
+    delete process.env.ALPACA_API_KEY;
+    delete process.env.ALPACA_API_SECRET;
+    delete process.env.FORCE_EXAMPLE;
+    clearAlertsForTests();
+    const { status, candidates } = await runScan();
+    assert.equal(candidates.length, 0);
+    assert.equal(status.feed, 'NOT_CONFIGURED');
+    assert.ok(status.message && /nøgle|key|mangler|konfigureret/i.test(status.message));
+    process.env.DATA_PROVIDER = 'example';
+  });
+
   it('live without keys fails loud (no silent fake-as-live)', async () => {
     process.env.DATA_PROVIDER = 'massive';
     delete process.env.MASSIVE_API_KEY;
