@@ -22,14 +22,44 @@ export interface ExampleTickerSeed {
   pattern: 'hod' | 'orb' | 'run' | 'gap' | 'vol';
 }
 
+/**
+ * Alma CHART-DESIGN-NOTE §9 — locked EXAMPLE display contract for EXMP.
+ * Bars drive OR/ORB/HOD; these fields keep list/detail/chart chrome coherent
+ * when raw (last−prev)/prev ≈ 18.23% but mock shows +18.4% (+0.99).
+ */
+export const EXMP_SNAPSHOT = {
+  symbol: 'EXMP',
+  prevClose: 5.43,
+  last: 6.42,
+  chgAbs: 0.99,
+  /** Display contract (+18.4%); raw math from 5.43→6.42 is ~18.23%. */
+  chgClosePct: 0.184,
+  gapPct: 0.121,
+  rvolDay: 9.8,
+  rvol5m: 6.2,
+  volume: 9_800_000,
+  float: 14_600_000,
+  vwap: 5.78,
+  orHigh: 6.12,
+  orLow: 5.46,
+  /** Status chrome “last … ET” — matches chart session end, not wall clock. */
+  lastUpdateEt: '09:42:15',
+  /** ISO used as EXAMPLE “now” for session phase (RTH). */
+  clockIso: '2026-10-23T09:42:15-04:00',
+} as const;
+
+/** EXAMPLE session clock (pinned to EXMP story). */
+export const EXAMPLE_CLOCK = new Date(EXMP_SNAPSHOT.clockIso);
+
 export const EXAMPLE_TICKERS: ExampleTickerSeed[] = [
   {
     symbol: 'EXMP',
     name: 'Example Corp.',
-    prevClose: 5.43,
-    float: 14_600_000,
+    prevClose: EXMP_SNAPSHOT.prevClose,
+    float: EXMP_SNAPSHOT.float,
     avgDailyVol20d: 1_000_000,
-    avgSlot5m: 20_000,
+    // last5 RTH vol 450k / 6.2 ≈ 72_581
+    avgSlot5m: 72_581,
     open0930: 6.087,
     pattern: 'hod',
   },
@@ -46,35 +76,40 @@ export const EXAMPLE_TICKERS: ExampleTickerSeed[] = [
 
 /** Locked EXMP 1m RTH story 09:30–09:42 ET (CHART-DESIGN-NOTE §9). */
 function buildExmpBars(sessionDate: string): Bar[] {
-  // Premarket sparse (for completeness)
   const bars: Bar[] = [];
-  let px = 5.55;
-  for (let m = 4 * 60; m < 9 * 60 + 30; m += 5) {
+  // Premarket: sparse 5m bars; volume sized so day total ≈ 9.8M (Alma Vol)
+  const pmMinutes: number[] = [];
+  for (let m = 4 * 60; m < 9 * 60 + 30; m += 5) pmMinutes.push(m);
+  const rthVolSum = 2_160_000;
+  const pmBudget = EXMP_SNAPSHOT.volume - rthVolSum;
+  const pmBase = Math.floor(pmBudget / pmMinutes.length);
+  let pmRemainder = pmBudget - pmBase * pmMinutes.length;
+
+  for (const m of pmMinutes) {
     const hh = String(Math.floor(m / 60)).padStart(2, '0');
     const mm = String(m % 60).padStart(2, '0');
     const t = `${sessionDate}T${hh}:${mm}:00-04:00`;
-    px = 5.43 + (6.08 - 5.43) * ((m - 240) / 330);
+    const px = 5.43 + (6.08 - 5.43) * ((m - 240) / 330);
+    const extra = pmRemainder > 0 ? 1 : 0;
+    if (pmRemainder > 0) pmRemainder -= 1;
     bars.push({
       t: new Date(t).toISOString(),
       o: px,
       h: px * 1.002,
       l: px * 0.998,
       c: px,
-      // Heavy PM volume near mid-gap keeps session VWAP near Alma target 5.78
-      v: 180_000 + (m % 7) * 20_000,
+      v: pmBase + extra,
     });
   }
 
   // RTH 1m bars — explicit OHLC so OR / ORB / HOD / VWAP stay coherent
   // minutes 0–4 = OR window [09:30, 09:35): range 5.46–6.12
   const rth: Array<{ o: number; h: number; l: number; c: number; v: number }> = [
-    // OR — high volume at lows pulls VWAP toward ~5.78
     { o: 6.087, h: 6.10, l: 5.90, c: 5.95, v: 220_000 }, // 09:30
     { o: 5.95, h: 6.12, l: 5.88, c: 6.05, v: 180_000 }, // 09:31 — OR high 6.12
     { o: 6.05, h: 6.08, l: 5.70, c: 5.75, v: 260_000 }, // 09:32
     { o: 5.75, h: 5.85, l: 5.46, c: 5.60, v: 420_000 }, // 09:33 — OR low 5.46
     { o: 5.60, h: 5.95, l: 5.55, c: 5.88, v: 300_000 }, // 09:34
-    // ORB5 break ~09:35–09:36 (close > OR high 6.12)
     { o: 5.88, h: 6.18, l: 5.85, c: 6.15, v: 140_000 }, // 09:35
     { o: 6.15, h: 6.22, l: 6.10, c: 6.20, v: 120_000 }, // 09:36 ORB5
     { o: 6.20, h: 6.24, l: 6.12, c: 6.18, v: 70_000 }, // 09:37
@@ -120,7 +155,8 @@ export function buildExampleBars(seed: ExampleTickerSeed, sessionDate = '2026-10
 
   px = seed.open0930;
   let high = px;
-  for (let i = 0; i < 60; i++) {
+  // Same EXAMPLE session window as EXMP (09:30–09:42) so global alerts stay 09:xx
+  for (let i = 0; i < 13; i++) {
     const totalMin = 9 * 60 + 30 + i;
     const hh = String(Math.floor(totalMin / 60)).padStart(2, '0');
     const mm = String(totalMin % 60).padStart(2, '0');

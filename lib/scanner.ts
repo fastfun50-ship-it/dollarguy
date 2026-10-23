@@ -23,7 +23,7 @@ import {
   computeOpeningRange,
 } from './signals';
 import type { HodState } from './signals';
-import { exampleSignalTag } from './data/exampleUniverse';
+import { EXAMPLE_CLOCK, EXMP_SNAPSHOT, exampleSignalTag } from './data/exampleUniverse';
 import { appendAlert, listAlerts, listAlertsForSymbol, seedAlerts } from './alerts/store';
 
 /**
@@ -52,16 +52,6 @@ export function ensureHodStateTradingDay(d: Date = new Date()): void {
   }
 }
 
-function getHodState(symbol: string): HodState {
-  ensureHodStateTradingDay();
-  let s = hodStateBySymbol.get(symbol);
-  if (!s) {
-    s = initialHodState();
-    hodStateBySymbol.set(symbol, s);
-  }
-  return s;
-}
-
 export function clearHodStatesForTests(): void {
   hodStateBySymbol.clear();
   hodStateDayEt = null;
@@ -85,13 +75,56 @@ function ageMinutes(bars: { t: string }[], fromIndex = 0): number {
   return Math.max(0, Math.round((last - first) / 60_000));
 }
 
+/** EXAMPLE mode uses pinned story clock so status matches chart 09:30–09:42. */
+function exampleClock(): Date {
+  return EXAMPLE_CLOCK;
+}
+
+function statusClock(mode: ScanStatus['mode']): Date {
+  return mode === 'EXAMPLE' ? exampleClock() : new Date();
+}
+
+function applyExmpDisplay(
+  symbol: string,
+  mode: ScanStatus['mode'],
+  metrics: {
+    last: number;
+    prevClose: number;
+    chg: number;
+    gap: number;
+    rd: number;
+    r5: number;
+    volume: number;
+  }
+): { chg: number; chgAbs: number; gap: number; rd: number; r5: number; volume: number } {
+  if (symbol === 'EXMP' && mode === 'EXAMPLE') {
+    return {
+      chg: EXMP_SNAPSHOT.chgClosePct,
+      chgAbs: EXMP_SNAPSHOT.chgAbs,
+      gap: EXMP_SNAPSHOT.gapPct,
+      rd: EXMP_SNAPSHOT.rvolDay,
+      r5: EXMP_SNAPSHOT.rvol5m,
+      volume: EXMP_SNAPSHOT.volume,
+    };
+  }
+  return {
+    chg: metrics.chg,
+    chgAbs: Number((metrics.last - metrics.prevClose).toFixed(2)),
+    gap: metrics.gap,
+    rd: metrics.rd,
+    r5: metrics.r5,
+    volume: metrics.volume,
+  };
+}
+
 export async function runScan(opts?: {
   empty?: boolean;
   connectionDown?: boolean;
 }): Promise<{ status: ScanStatus; candidates: Candidate[]; alerts: AlertEvent[] }> {
   ensureHodStateTradingDay();
   const meta = providerMeta();
-  const session = getSessionPhase();
+  const clock = statusClock(meta.mode);
+  const session = meta.mode === 'EXAMPLE' ? getSessionPhase(clock) : getSessionPhase();
 
   if (opts?.connectionDown) {
     return {
@@ -100,7 +133,7 @@ export async function runScan(opts?: {
         session,
         feed: 'DOWN',
         feedLabel: 'forbindelse ned',
-        lastUpdateEt: formatEtTime(),
+        lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
         dbConfigured: isDbConfigured(),
         ws: 'DOWN',
         message: 'Forbindelse til datafeed er nede.',
@@ -122,7 +155,7 @@ export async function runScan(opts?: {
         session,
         feed: 'NOT_CONFIGURED',
         feedLabel: provider.feedLabel,
-        lastUpdateEt: formatEtTime(),
+        lastUpdateEt: meta.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
         dbConfigured: isDbConfigured(),
         ws: 'DOWN',
         message: e instanceof Error ? e.message : 'Datafejl',
@@ -139,7 +172,7 @@ export async function runScan(opts?: {
         session,
         feed: provider.feedStatus,
         feedLabel: provider.feedLabel,
-        lastUpdateEt: formatEtTime(),
+        lastUpdateEt: provider.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
         dbConfigured: isDbConfigured(),
         ws: provider.mode === 'EXAMPLE' ? 'STUB' : 'OK',
         message: 'Ingen tickers matcher filtre',
@@ -155,20 +188,35 @@ export async function runScan(opts?: {
   for (const snap of universe) {
     if (!passesUniverseFilters(snap)) continue;
 
-    const gap = gapOpenPct(snap.open0930, snap.prevClose);
-    const chg = chgClosePct(snap.last, snap.prevClose);
-    const rd = rvolDay(snap.bars, snap.avgDailyVol20d);
-    const r5 = rvol5m(snap.bars.filter((_, i, a) => i < a.length), snap.avgSlot5m);
+    const gapRaw = gapOpenPct(snap.open0930, snap.prevClose);
+    const chgRaw = chgClosePct(snap.last, snap.prevClose);
+    const rdRaw = rvolDay(snap.bars, snap.avgDailyVol20d);
+    const r5Raw = rvol5m(
+      snap.bars.filter((_, i, a) => i < a.length),
+      snap.avgSlot5m
+    );
+    const disp = applyExmpDisplay(snap.symbol, provider.mode, {
+      last: snap.last,
+      prevClose: snap.prevClose,
+      chg: chgRaw,
+      gap: gapRaw,
+      rd: rdRaw,
+      r5: r5Raw,
+      volume: snap.volume,
+    });
+    const gap = disp.gap;
+    const chg = disp.chg;
+    const rd = disp.rd;
+    const r5 = disp.r5;
 
     const orb = detectOrbBreak(snap.bars, DEFAULT_FILTERS.orbN);
     // Walk HOD with cooldown/pullback so alerts include later highs (e.g. EXMP 6.42 @ 09:42).
-    // Persist end-state for cross-scan cooldown; fresh start each scan over the bar window.
     let hodWalk = initialHodState();
     let hodHits = 0;
     const hodOpts = {
       cooldownMin: DEFAULT_FILTERS.hodCooldownMin,
       pullbackPct: DEFAULT_FILTERS.hodPullbackPct,
-      rvol5m: r5,
+      rvol5m: r5Raw,
       rvolMin: DEFAULT_FILTERS.rvol5Min,
     };
     for (let guard = 0; guard < 32; guard++) {
@@ -186,23 +234,8 @@ export async function runScan(opts?: {
       });
     }
     hodStateBySymbol.set(snap.symbol, hodWalk);
-    const run = detectRunningUp(snap.bars, {
-      k: DEFAULT_FILTERS.runK,
-      x: DEFAULT_FILTERS.runX,
-    });
-    const volSpike = relVolSpike(r5, 5);
-
-    let signal: SignalKind | null = null;
-    const why: string[] = [];
-    const rthHighs = snap.bars.filter((b) => isRthBar(b.t)).map((b) => b.h);
-    const sessionHod = rthHighs.length ? Math.max(...rthHighs) : 0;
-
-    if (hodHits > 0 || (snap.seed?.pattern === 'hod' && sessionHod > 0)) {
-      signal = 'HOD';
-      why.push(`HOD — ny intraday high ${sessionHod.toFixed(2)}`);
-    } else if (orb.hit && orb.bar) {
-      signal = 'ORB5';
-      why.push(`ORB5 break — close > OR high ${orb.orHigh.toFixed(2)}`);
+    // ORB alert whenever break fires (even if primary signal is HOD) — EXMP story ORB5@09:36
+    if (orb.hit && orb.bar) {
       newAlerts.push({
         id: `${snap.symbol}-ORB-${orb.bar.t}`,
         tsEt: formatEtFromIso(orb.bar.t),
@@ -211,6 +244,25 @@ export async function runScan(opts?: {
         message: `ORB5 break — close > OR high`,
         price: orb.bar.c,
       });
+    }
+    const run = detectRunningUp(snap.bars, {
+      k: DEFAULT_FILTERS.runK,
+      x: DEFAULT_FILTERS.runX,
+    });
+    const volSpike = relVolSpike(r5Raw, 5);
+
+    let signal: SignalKind | null = null;
+    const why: string[] = [];
+    const rthHighs = snap.bars.filter((b) => isRthBar(b.t)).map((b) => b.h);
+    const sessionHod = rthHighs.length ? Math.max(...rthHighs) : 0;
+    const lastBar = snap.bars[snap.bars.length - 1];
+
+    if (hodHits > 0 || (snap.seed?.pattern === 'hod' && sessionHod > 0)) {
+      signal = 'HOD';
+      why.push(`HOD — ny intraday high ${sessionHod.toFixed(2)}`);
+    } else if (orb.hit && orb.bar) {
+      signal = 'ORB5';
+      why.push(`ORB5 break — close > OR high ${orb.orHigh.toFixed(2)}`);
     } else if (run.hit && run.bar) {
       signal = 'RUN';
       why.push(`Running Up — +${(run.pct * 100).toFixed(1)}% / ${DEFAULT_FILTERS.runK}m`);
@@ -226,8 +278,8 @@ export async function runScan(opts?: {
       signal = 'VS';
       why.push(`Volumen spike — RVol5 ${r5.toFixed(1)}×`);
       newAlerts.push({
-        id: `${snap.symbol}-VS`,
-        tsEt: formatEtTime(),
+        id: `${snap.symbol}-VS-${lastBar?.t ?? 'vs'}`,
+        tsEt: lastBar ? formatEtFromIso(lastBar.t) : EXMP_SNAPSHOT.lastUpdateEt,
         symbol: snap.symbol,
         kind: 'VS',
         message: `Volumen spike — RVol5 ${r5.toFixed(1)}×`,
@@ -237,6 +289,18 @@ export async function runScan(opts?: {
       signal = exampleSignalTag(snap.seed.pattern);
     } else {
       signal = 'GAP';
+    }
+
+    // EXMP story: explicit mid-session VS alert (Alma ticker alerts 09:37:14)
+    if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
+      newAlerts.push({
+        id: 'EXMP-VS-093714',
+        tsEt: '09:37:14',
+        symbol: 'EXMP',
+        kind: 'VS',
+        message: 'Volumen spike RVol5 5.4×',
+        price: 6.18,
+      });
     }
 
     why.push(`RVol5 ${r5.toFixed(1)}× · Gap ${(gap * 100).toFixed(1)}%`);
@@ -249,10 +313,11 @@ export async function runScan(opts?: {
       name: snap.name,
       last: snap.last,
       chgClosePct: chg,
+      chgAbs: disp.chgAbs,
       gapPct: gap,
       rvolDay: rd,
       rvol5m: r5,
-      volume: snap.volume,
+      volume: disp.volume,
       float: snap.float,
       signal,
       ageMin: ageMinutes(snap.bars),
@@ -275,7 +340,8 @@ export async function runScan(opts?: {
       session,
       feed: provider.feedStatus,
       feedLabel: provider.feedLabel,
-      lastUpdateEt: formatEtTime(),
+      lastUpdateEt:
+        provider.mode === 'EXAMPLE' ? EXMP_SNAPSHOT.lastUpdateEt : formatEtTime(clock),
       dbConfigured: isDbConfigured(),
       ws: provider.mode === 'EXAMPLE' ? 'STUB' : 'OK',
       message:
@@ -307,6 +373,7 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
       name: snap.name,
       last: snap.last,
       chgClosePct: chgClosePct(snap.last, snap.prevClose),
+      chgAbs: Number((snap.last - snap.prevClose).toFixed(2)),
       gapPct: gapOpenPct(snap.open0930, snap.prevClose),
       rvolDay: rvolDay(snap.bars, snap.avgDailyVol20d),
       rvol5m: rvol5m(snap.bars, snap.avgSlot5m),
@@ -325,7 +392,7 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
   let vwap = vwapFromBars(chartBars);
   // Alma locked EXAMPLE snapshot: EXMP VWAP 5.78 (display contract)
   if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
-    vwap = 5.78;
+    vwap = EXMP_SNAPSHOT.vwap;
   }
   return {
     candidate,

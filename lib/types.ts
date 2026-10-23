@@ -54,6 +54,8 @@ export interface Candidate {
   name: string;
   last: number;
   chgClosePct: number;
+  /** Absolute change last − prevClose (EXMP: +0.99). */
+  chgAbs: number;
   gapPct: number;
   rvolDay: number;
   rvol5m: number;

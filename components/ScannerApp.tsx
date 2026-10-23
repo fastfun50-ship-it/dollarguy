@@ -274,7 +274,14 @@ export default function ScannerApp() {
           <span className="text-[11px] font-bold px-2 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-400">
             {status?.session ?? '…'}
           </span>
-          <span className="text-[11px] text-[#8b9bb3] tabular-nums">
+          <span
+            className="text-[11px] text-[#8b9bb3] tabular-nums"
+            title={
+              isExample
+                ? 'EXAMPLE session clock matches chart 09:30–09:42 ET (not wall clock)'
+                : 'Seneste feed-update (ET)'
+            }
+          >
             last {status?.lastUpdateEt ?? '—'} ET
           </span>
           <span
@@ -626,7 +633,9 @@ function DetailPanel({
               detail.candidate.chgClosePct >= 0 ? 'text-emerald-400' : 'text-red-400'
             }`}
           >
-            {fmtPct(detail.candidate.chgClosePct)}
+            {fmtPct(detail.candidate.chgClosePct)}% (
+            {detail.candidate.chgAbs >= 0 ? '+' : ''}
+            {detail.candidate.chgAbs.toFixed(2)})
           </span>
         </div>
         <div className="grid grid-cols-4 gap-1.5 mt-2.5">
