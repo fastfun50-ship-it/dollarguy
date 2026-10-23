@@ -144,6 +144,11 @@ export default function ScannerApp() {
               EXAMPLE DATA
             </span>
           )}
+          {mode === 'LIVE' && (
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded border border-emerald-400 bg-emerald-500/20 text-emerald-300 tracking-wide">
+              LIVE
+            </span>
+          )}
           {mode === 'DELAYED' && (
             <span className="text-[11px] font-bold px-2 py-0.5 rounded border border-amber-500/50 bg-amber-500/15 text-amber-300">
               DELAYED 15m

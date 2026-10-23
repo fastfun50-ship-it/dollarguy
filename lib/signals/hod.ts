@@ -5,11 +5,13 @@ export interface HodState {
   sessionHigh: number;
   lastAlertAt: string | null;
   lastAlertHigh: number | null;
+  /** Lowest low seen after lastAlertAt (for ≥pullbackPct reset). null until first post-alert bar. */
+  lowSinceAlert: number | null;
 }
 
 /**
  * HOD: RTH [09:30,16:00) only. Premarket does not count.
- * Cooldown: 3 min after last alert OR ≥0.5% pullback from that HOD.
+ * Cooldown: 3 min after last alert OR ≥0.5% pullback from that HOD (via intervening low).
  */
 export function detectHod(
   bars: Bar[],
@@ -23,14 +25,29 @@ export function detectHod(
 
   const rth = bars.filter((b) => isRthBar(b.t));
   let sessionHigh = state.sessionHigh;
-  let hitBar: Bar | null = null;
+  let lastAlertAt = state.lastAlertAt;
+  let lastAlertHigh = state.lastAlertHigh;
+  let lowSinceAlert = state.lowSinceAlert;
 
   for (const bar of rth) {
+    if (lastAlertAt != null) {
+      const barMs = new Date(bar.t).getTime();
+      const alertMs = new Date(lastAlertAt).getTime();
+      if (barMs > alertMs) {
+        lowSinceAlert =
+          lowSinceAlert == null ? bar.l : Math.min(lowSinceAlert, bar.l);
+      }
+    }
+
     if (bar.h > sessionHigh) {
       const newHigh = bar.h;
-      const canAlert = canFireHod(state, bar.t, newHigh, cooldownMin, pullbackPct);
+      const canAlert = canFireHod(
+        { lastAlertAt, lastAlertHigh, lowSinceAlert },
+        bar.t,
+        cooldownMin,
+        pullbackPct
+      );
       if (canAlert && rvolOk) {
-        hitBar = bar;
         return {
           hit: true,
           bar,
@@ -39,6 +56,7 @@ export function detectHod(
             sessionHigh: newHigh,
             lastAlertAt: bar.t,
             lastAlertHigh: newHigh,
+            lowSinceAlert: null,
           },
         };
       }
@@ -50,14 +68,22 @@ export function detectHod(
     hit: false,
     bar: null,
     newHigh: sessionHigh,
-    nextState: { ...state, sessionHigh },
+    nextState: {
+      sessionHigh,
+      lastAlertAt,
+      lastAlertHigh,
+      lowSinceAlert,
+    },
   };
 }
 
 function canFireHod(
-  state: HodState,
+  state: {
+    lastAlertAt: string | null;
+    lastAlertHigh: number | null;
+    lowSinceAlert: number | null;
+  },
   barIso: string,
-  newHigh: number,
   cooldownMin: number,
   pullbackPct: number
 ): boolean {
@@ -65,17 +91,22 @@ function canFireHod(
   const elapsedMs =
     new Date(barIso).getTime() - new Date(state.lastAlertAt).getTime();
   if (elapsedMs >= cooldownMin * 60_000) return true;
-  const pullback = (state.lastAlertHigh - newHigh) / state.lastAlertHigh;
-  // pullback from last alert high: if price pulled back enough before new high, allow
-  // For a new high above lastAlertHigh, pullback condition is about intervening low —
-  // Alice: cooldown OR ≥0.5% pullback from that HOD. New high always exceeds last;
-  // so within cooldown we only re-fire if there was a pullback reset (handled by caller
-  // updating lastAlertHigh). Within cooldown and still climbing: suppress.
-  void pullback;
-  void pullbackPct;
+  // ≥pullbackPct drop from lastAlertHigh via intervening low → allow re-fire
+  if (
+    state.lowSinceAlert != null &&
+    (state.lastAlertHigh - state.lowSinceAlert) / state.lastAlertHigh >=
+      pullbackPct
+  ) {
+    return true;
+  }
   return false;
 }
 
 export function initialHodState(): HodState {
-  return { sessionHigh: 0, lastAlertAt: null, lastAlertHigh: null };
+  return {
+    sessionHigh: 0,
+    lastAlertAt: null,
+    lastAlertHigh: null,
+    lowSinceAlert: null,
+  };
 }

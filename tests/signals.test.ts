@@ -49,19 +49,20 @@ describe('ORB_N=5 close-break', () => {
 
 describe('HOD RTH + cooldown', () => {
   it('fires on new RTH high and suppresses within cooldown', () => {
+    // Tight ranges so intervening lows stay <0.5% below lastAlertHigh
     const bars: Bar[] = [
-      bar('09:30:00', 5, 5.1, 4.9, 5.05, 1000),
-      bar('09:31:00', 5.05, 5.2, 5.0, 5.15, 1000),
-      bar('09:32:00', 5.15, 5.4, 5.1, 5.35, 1000),
+      bar('09:30:00', 5.0, 5.1, 5.0, 5.05, 1000),
     ];
-    const first = detectHod(bars, initialHodState(), { rvol5m: 3 });
+    const first = detectHod(bars, initialHodState(), { rvol5m: 3, cooldownMin: 3, pullbackPct: 0.005 });
     assert.equal(first.hit, true);
+    assert.equal(first.newHigh, 5.1);
+    // Climb with shallow dip only: low 5.098 → pullback ≈0.04% < 0.5%
     const climb: Bar[] = [
       ...bars,
-      bar('09:32:30', 5.35, 5.5, 5.3, 5.45, 1000),
+      bar('09:31:00', 5.05, 5.2, 5.098, 5.15, 1000),
+      bar('09:32:00', 5.15, 5.4, 5.14, 5.35, 1000),
     ];
-    // still < 3 minutes after first alert at 09:30 → suppress
-    const second = detectHod(climb, first.nextState, { rvol5m: 3, cooldownMin: 3 });
+    const second = detectHod(climb, first.nextState, { rvol5m: 3, cooldownMin: 3, pullbackPct: 0.005 });
     assert.equal(second.hit, false);
   });
 
@@ -73,6 +74,54 @@ describe('HOD RTH + cooldown', () => {
     const r = detectHod(bars, initialHodState(), { rvol5m: 5 });
     assert.equal(r.hit, true);
     assert.ok(r.newHigh < 6);
+  });
+
+  it('fires again after ≥0.5% pullback within cooldown', () => {
+    const firstBars: Bar[] = [
+      bar('09:30:00', 5, 5.1, 4.9, 5.05, 1000),
+    ];
+    const first = detectHod(firstBars, initialHodState(), {
+      rvol5m: 3,
+      cooldownMin: 3,
+      pullbackPct: 0.005,
+    });
+    assert.equal(first.hit, true);
+    assert.equal(first.newHigh, 5.1);
+
+    // Intervening low 5.07 ≤ 5.1 * 0.995 → pullback OK, then new high
+    const afterPullback: Bar[] = [
+      ...firstBars,
+      bar('09:31:00', 5.05, 5.08, 5.07, 5.07, 1000),
+      bar('09:32:00', 5.07, 5.25, 5.06, 5.2, 1000),
+    ];
+    const second = detectHod(afterPullback, first.nextState, {
+      rvol5m: 3,
+      cooldownMin: 3,
+      pullbackPct: 0.005,
+    });
+    assert.equal(second.hit, true);
+    assert.ok(second.newHigh > 5.1);
+  });
+
+  it('still suppresses shallow dip (<0.5%) inside cooldown', () => {
+    const firstBars: Bar[] = [bar('09:30:00', 5, 5.1, 4.9, 5.05, 1000)];
+    const first = detectHod(firstBars, initialHodState(), {
+      rvol5m: 3,
+      cooldownMin: 3,
+      pullbackPct: 0.005,
+    });
+    // low 5.09 → pullback = (5.1-5.09)/5.1 ≈ 0.196% < 0.5%
+    const shallow: Bar[] = [
+      ...firstBars,
+      bar('09:31:00', 5.08, 5.095, 5.09, 5.092, 1000),
+      bar('09:32:00', 5.09, 5.2, 5.09, 5.15, 1000),
+    ];
+    const second = detectHod(shallow, first.nextState, {
+      rvol5m: 3,
+      cooldownMin: 3,
+      pullbackPct: 0.005,
+    });
+    assert.equal(second.hit, false);
   });
 });
 

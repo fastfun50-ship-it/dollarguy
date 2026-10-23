@@ -22,8 +22,28 @@ import {
   relVolSpike,
   computeOpeningRange,
 } from './signals';
+import type { HodState } from './signals';
 import { exampleSignalTag } from './data/exampleUniverse';
 import { appendAlert, listAlerts, listAlertsForSymbol, seedAlerts } from './alerts/store';
+
+/**
+ * Persistent HOD state per symbol across runScan calls (same Node process).
+ * M1: in-memory only — not shared across serverless instances; reset via clearHodStatesForTests.
+ */
+const hodStateBySymbol = new Map<string, HodState>();
+
+function getHodState(symbol: string): HodState {
+  let s = hodStateBySymbol.get(symbol);
+  if (!s) {
+    s = initialHodState();
+    hodStateBySymbol.set(symbol, s);
+  }
+  return s;
+}
+
+export function clearHodStatesForTests(): void {
+  hodStateBySymbol.clear();
+}
 
 function vwapFromBars(bars: { c: number; v: number; h: number; l: number }[]): number | null {
   let pv = 0;
@@ -118,12 +138,13 @@ export async function runScan(opts?: {
     const r5 = rvol5m(snap.bars.filter((_, i, a) => i < a.length), snap.avgSlot5m);
 
     const orb = detectOrbBreak(snap.bars, DEFAULT_FILTERS.orbN);
-    const hod = detectHod(snap.bars, initialHodState(), {
+    const hod = detectHod(snap.bars, getHodState(snap.symbol), {
       cooldownMin: DEFAULT_FILTERS.hodCooldownMin,
       pullbackPct: DEFAULT_FILTERS.hodPullbackPct,
       rvol5m: r5,
       rvolMin: DEFAULT_FILTERS.rvol5Min,
     });
+    hodStateBySymbol.set(snap.symbol, hod.nextState);
     const run = detectRunningUp(snap.bars, {
       k: DEFAULT_FILTERS.runK,
       x: DEFAULT_FILTERS.runX,

@@ -2,6 +2,7 @@ import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { runScan, getTickerDetail } from '../lib/scanner';
 import { clearAlertsForTests } from '../lib/alerts/store';
+import { clearHodStatesForTests } from '../lib/scanner';
 import { providerMeta, resolveDataProviderKind } from '../lib/data/provider';
 import { getSessionPhase } from '../lib/session';
 
@@ -11,6 +12,7 @@ describe('M1 chain: data → filters → list → explanation → chart → aler
     delete process.env.MASSIVE_API_KEY;
     delete process.env.ALPACA_API_KEY;
     clearAlertsForTests();
+    clearHodStatesForTests();
   });
 
   it('defaults DATA_PROVIDER to example (not ibkr/broker)', () => {
@@ -30,6 +32,7 @@ describe('M1 chain: data → filters → list → explanation → chart → aler
 
   it('runs full EXAMPLE chain with candidates, why, bars, alerts', async () => {
     clearAlertsForTests();
+    clearHodStatesForTests();
     const { status, candidates, alerts } = await runScan();
     assert.equal(status.mode, 'EXAMPLE');
     assert.ok(['PRE', 'RTH', 'AH', 'CLOSED'].includes(status.session));
