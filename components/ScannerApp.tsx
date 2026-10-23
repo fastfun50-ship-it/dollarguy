@@ -531,13 +531,24 @@ export default function ScannerApp() {
         </div>
       )}
 
-      <footer className="flex-shrink-0 px-3.5 py-1.5 border-t border-[#1e2a3d] bg-[#0f1724] flex justify-between text-[11px] text-slate-500">
+      <footer className="flex-shrink-0 px-3.5 py-1.5 border-t border-[#1e2a3d] bg-[#0f1724] flex flex-wrap justify-between gap-2 text-[11px] text-slate-500">
         <span>
           {isExample
             ? 'Alle kurser, tickere og hændelser er fiktive.'
             : 'Live/delayed feed — se statusbadge.'}
         </span>
-        <span>DollarGuy · US Stock Momentum Scanner · M1 · ingen auto-handel</span>
+        <span className="flex items-center gap-2 flex-wrap justify-end">
+          <span>DollarGuy · M1 · ingen auto-handel</span>
+          <a
+            href="https://www.tradingview.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[#8b9bb3] underline-offset-2 hover:underline"
+          >
+            Charts by TradingView
+          </a>
+          <span className="text-slate-600">(lightweight-charts · Apache-2.0)</span>
+        </span>
       </footer>
     </div>
   );

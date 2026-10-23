@@ -1,13 +1,21 @@
 'use client';
 
 /**
- * PriceChart — M1 interim SVG chart with the target API for lightweight-charts
- * (TradingView, Apache-2.0). Do NOT npm-install lightweight-charts until Mira/Peter
- * approve the dependency (STANDARD §4). Swap implementation behind this props surface.
- *
- * Wire: candles + volume pane + VWAP + OR, interval tabs, EXAMPLE badge.
+ * PriceChart — TradingView lightweight-charts (Apache-2.0).
+ * Display only; OHLC/VWAP/OR come from our documented data chain (EXAMPLE until keys).
+ * Attribution: see footer + README NOTICE.
  */
 
+import { useEffect, useRef } from 'react';
+import {
+  createChart,
+  ColorType,
+  CrosshairMode,
+  LineStyle,
+  type IChartApi,
+  type ISeriesApi,
+  type UTCTimestamp,
+} from 'lightweight-charts';
 import type { Bar, DataMode } from '@/lib/types';
 
 export type ChartInterval = '1m' | '5m' | '15m' | '1t' | 'D';
@@ -21,17 +29,21 @@ export interface PriceChartProps {
   interval: ChartInterval;
   onIntervalChange?: (i: ChartInterval) => void;
   mode: DataMode;
-  /** Current last — shown in green box on Y when provided. */
   last?: number;
   className?: string;
 }
 
 const INTERVALS: ChartInterval[] = ['1m', '5m', '15m', '1t', 'D'];
+const UP = '#22c55e';
+const DOWN = '#ef4444';
+const VWAP_COLOR = '#3b82f6';
+const OR_COLOR = '#a78bfa';
+const GRID = '#1e2a3d';
+const MUTED = '#8b9bb3';
+const BG = '#0a1018';
 
 function aggregateBars(bars: Bar[], interval: ChartInterval): Bar[] {
   if (interval === '1m' || bars.length === 0) return bars;
-  const minutes =
-    interval === '5m' ? 5 : interval === '15m' ? 15 : interval === '1t' ? 60 : 9999;
   if (interval === 'D') {
     const first = bars[0];
     const last = bars[bars.length - 1];
@@ -45,11 +57,12 @@ function aggregateBars(bars: Bar[], interval: ChartInterval): Bar[] {
     }
     return [{ t: first.t, o: first.o, h, l, c: last.c, v }];
   }
+  const minutes = interval === '5m' ? 5 : interval === '15m' ? 15 : 60;
   const out: Bar[] = [];
   let bucket: Bar | null = null;
   let bucketStart = -1;
   for (const b of bars) {
-    const m = minutesSinceEpoch(b.t);
+    const m = Math.floor(new Date(b.t).getTime() / 60_000);
     const start = Math.floor(m / minutes) * minutes;
     if (!bucket || start !== bucketStart) {
       if (bucket) out.push(bucket);
@@ -67,17 +80,8 @@ function aggregateBars(bars: Bar[], interval: ChartInterval): Bar[] {
   return out;
 }
 
-function minutesSinceEpoch(iso: string): number {
-  return Math.floor(new Date(iso).getTime() / 60_000);
-}
-
-function fmtEt(iso: string): string {
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'America/New_York',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(new Date(iso));
+function toUtcTs(iso: string): UTCTimestamp {
+  return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
 
 export default function PriceChart({
@@ -92,18 +96,185 @@ export default function PriceChart({
   last,
   className = '',
 }: PriceChartProps) {
-  const series = aggregateBars(bars, interval);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const volRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const priceLinesRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([]);
   const isExample = mode === 'EXAMPLE';
+  const series = aggregateBars(bars, interval);
+  const displayLast = last ?? (series.length ? series[series.length - 1].c : undefined);
+  const lastVol = series.length ? series[series.length - 1].v : 0;
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+
+    const chart = createChart(el, {
+      layout: {
+        background: { type: ColorType.Solid, color: BG },
+        textColor: MUTED,
+        fontSize: 11,
+        attributionLogo: true,
+      },
+      grid: {
+        vertLines: { color: 'rgba(30,42,61,0.35)' },
+        horzLines: { color: GRID },
+      },
+      crosshair: { mode: CrosshairMode.Normal },
+      rightPriceScale: {
+        borderColor: GRID,
+        scaleMargins: { top: 0.08, bottom: 0.28 },
+      },
+      timeScale: {
+        borderColor: GRID,
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      width: el.clientWidth,
+      height: el.clientHeight || 240,
+    });
+
+    const candles = chart.addCandlestickSeries({
+      upColor: UP,
+      downColor: DOWN,
+      borderUpColor: UP,
+      borderDownColor: DOWN,
+      wickUpColor: UP,
+      wickDownColor: DOWN,
+      borderVisible: true,
+      wickVisible: true,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+
+    const volume = chart.addHistogramSeries({
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'vol',
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    chart.priceScale('vol').applyOptions({
+      scaleMargins: { top: 0.78, bottom: 0 },
+    });
+
+    chartRef.current = chart;
+    candleRef.current = candles;
+    volRef.current = volume;
+
+    const ro = new ResizeObserver(() => {
+      if (!wrapRef.current || !chartRef.current) return;
+      chartRef.current.applyOptions({
+        width: wrapRef.current.clientWidth,
+        height: wrapRef.current.clientHeight || 240,
+      });
+    });
+    ro.observe(el);
+
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candleRef.current = null;
+      volRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const candles = candleRef.current;
+    const volume = volRef.current;
+    const chart = chartRef.current;
+    if (!candles || !volume || !chart) return;
+
+    const series = aggregateBars(bars, interval);
+    const displayLast = last ?? (series.length ? series[series.length - 1].c : undefined);
+
+    if (!series.length) {
+      candles.setData([]);
+      volume.setData([]);
+      return;
+    }
+
+    candles.setData(
+      series.map((b) => ({
+        time: toUtcTs(b.t),
+        open: b.o,
+        high: b.h,
+        low: b.l,
+        close: b.c,
+      }))
+    );
+
+    volume.setData(
+      series.map((b) => ({
+        time: toUtcTs(b.t),
+        value: b.v,
+        color: b.c >= b.o ? 'rgba(34,197,94,0.55)' : 'rgba(239,68,68,0.55)',
+      }))
+    );
+
+    for (const pl of priceLinesRef.current) {
+      try { candles.removePriceLine(pl); } catch { /* already gone */ }
+    }
+    priceLinesRef.current = [];
+
+    const addLine = (opts: Parameters<ISeriesApi<'Candlestick'>['createPriceLine']>[0]) => {
+      priceLinesRef.current.push(candles.createPriceLine(opts));
+    };
+
+    if (vwap != null) {
+      addLine({
+        price: vwap,
+        color: VWAP_COLOR,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `VWAP ${vwap.toFixed(2)}`,
+      });
+    }
+    if (orHigh != null) {
+      addLine({
+        price: orHigh,
+        color: OR_COLOR,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `OR high ${orHigh.toFixed(2)}`,
+      });
+    }
+    if (orLow != null) {
+      addLine({
+        price: orLow,
+        color: OR_COLOR,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `OR low ${orLow.toFixed(2)}`,
+      });
+    }
+    if (displayLast != null) {
+      candles.applyOptions({
+        lastValueVisible: true,
+        priceLineColor: UP,
+        priceLineVisible: true,
+        priceLineWidth: 1,
+      });
+    }
+
+    chart.timeScale().fitContent();
+  }, [bars, interval, vwap, orHigh, orLow, last]);
 
   return (
     <div className={`flex flex-col min-h-0 ${className}`}>
       <div className="flex items-center gap-2 px-1 pb-1.5 flex-wrap">
         <span className="text-sm font-extrabold tracking-wide">{symbol}</span>
-        <div className="flex gap-0.5 rounded-md border border-[#1e2a3d] overflow-hidden">
+        <div className="flex gap-0.5 rounded-md border border-[#1e2a3d] overflow-hidden" role="tablist">
           {INTERVALS.map((iv) => (
             <button
               key={iv}
               type="button"
+              role="tab"
+              aria-selected={interval === iv}
               onClick={() => onIntervalChange?.(iv)}
               className={`px-2 py-0.5 text-[10px] font-bold ${
                 interval === iv
@@ -121,15 +292,13 @@ export default function PriceChart({
           </span>
         )}
         <span className="ml-auto text-[10px] text-[#8b9bb3] tabular-nums">
-          {series.length} bars · {interval}
+          Volumen {lastVol >= 1e6 ? `${(lastVol / 1e6).toFixed(1)}M` : `${(lastVol / 1e3).toFixed(1)}K`} · ET
         </span>
       </div>
-      <InterimSvgChart
-        bars={series}
-        vwap={vwap}
-        orHigh={orHigh}
-        orLow={orLow}
-        last={last ?? (series.length ? series[series.length - 1].c : undefined)}
+      <div
+        ref={wrapRef}
+        className="w-full h-[200px] md:h-[250px] rounded-md border border-[#1e2a3d] overflow-hidden"
+        data-chart-engine="lightweight-charts"
       />
       <div className="flex gap-3 text-[10px] text-[#8b9bb3] px-1 pt-1 flex-wrap">
         {vwap != null && (
@@ -142,218 +311,20 @@ export default function PriceChart({
           <span>
             <i
               className="inline-block w-3.5 border-t border-dashed align-middle mr-1"
-              style={{ borderColor: '#a78bfa' }}
+              style={{ borderColor: OR_COLOR }}
             />
-            OR {orLow.toFixed(2)}–{orHigh.toFixed(2)}
+            OR high {orHigh.toFixed(2)} · OR low {orLow.toFixed(2)}
           </span>
         )}
-        <span className="text-slate-500">ET · interim SVG (lightweight-charts pending approval)</span>
+        <a
+          href="https://www.tradingview.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ml-auto text-slate-500 hover:text-[#8b9bb3] underline-offset-2 hover:underline"
+        >
+          Charting by TradingView
+        </a>
       </div>
     </div>
-  );
-}
-
-function InterimSvgChart({
-  bars,
-  vwap,
-  orHigh,
-  orLow,
-  last,
-}: {
-  bars: Bar[];
-  vwap: number | null;
-  orHigh: number | null;
-  orLow: number | null;
-  last?: number;
-}) {
-  if (!bars.length) {
-    return <div className="h-[200px] text-[#8b9bb3] text-xs p-4">Ingen grafdata</div>;
-  }
-
-  const W = 560;
-  const H = 220;
-  const volH = 48;
-  const padL = 8;
-  const padR = 52;
-  const padT = 12;
-  const padB = 18;
-  const plotH = H - volH - padT - padB;
-  const plotW = W - padL - padR;
-
-  const lows = bars.map((b) => b.l);
-  const highs = bars.map((b) => b.h);
-  const min = Math.min(...lows, orLow ?? Infinity, vwap ?? Infinity);
-  const max = Math.max(...highs, orHigh ?? -Infinity, vwap ?? -Infinity);
-  const span = max - min || 1;
-  const maxV = Math.max(...bars.map((b) => b.v), 1);
-  const bw = plotW / bars.length;
-
-  const y = (p: number) => padT + plotH - ((p - min) / span) * plotH;
-  const x = (i: number) => padL + i * bw + bw / 2;
-
-  const priceTicks = [min, min + span * 0.25, min + span * 0.5, min + span * 0.75, max];
-  const timeIdx = [0, Math.floor(bars.length / 2), bars.length - 1].filter(
-    (v, i, a) => a.indexOf(v) === i
-  );
-
-  return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      className="w-full h-[200px] md:h-[220px]"
-      preserveAspectRatio="xMidYMid meet"
-      role="img"
-      aria-label="Kursgraf"
-    >
-      {/* grid */}
-      {priceTicks.map((p, i) => (
-        <g key={i}>
-          <line
-            x1={padL}
-            y1={y(p)}
-            x2={padL + plotW}
-            y2={y(p)}
-            stroke="#1e2a3d"
-            strokeWidth={1}
-          />
-          <text x={W - 4} y={y(p) + 3} textAnchor="end" fill="#8b9bb3" fontSize={9}>
-            {p.toFixed(2)}
-          </text>
-        </g>
-      ))}
-
-      {/* OR band */}
-      {orHigh != null && orLow != null && (
-        <>
-          <line
-            x1={padL}
-            y1={y(orHigh)}
-            x2={padL + plotW}
-            y2={y(orHigh)}
-            stroke="#a78bfa"
-            strokeDasharray="4 3"
-            strokeWidth={1}
-          />
-          <line
-            x1={padL}
-            y1={y(orLow)}
-            x2={padL + plotW}
-            y2={y(orLow)}
-            stroke="#a78bfa"
-            strokeDasharray="4 3"
-            strokeWidth={1}
-          />
-          <text x={padL + 2} y={y(orHigh) - 2} fill="#a78bfa" fontSize={8}>
-            OR H {orHigh.toFixed(2)}
-          </text>
-          <text x={padL + 2} y={y(orLow) + 10} fill="#a78bfa" fontSize={8}>
-            OR L {orLow.toFixed(2)}
-          </text>
-        </>
-      )}
-
-      {/* VWAP */}
-      {vwap != null && (
-        <>
-          <line
-            x1={padL}
-            y1={y(vwap)}
-            x2={padL + plotW}
-            y2={y(vwap)}
-            stroke="#3b82f6"
-            strokeWidth={1.5}
-          />
-          <text x={padL + plotW - 2} y={y(vwap) - 3} textAnchor="end" fill="#3b82f6" fontSize={8}>
-            VWAP {vwap.toFixed(2)}
-          </text>
-        </>
-      )}
-
-      {/* candles */}
-      {bars.map((b, i) => {
-        const cx = x(i);
-        const up = b.c >= b.o;
-        const color = up ? '#22c55e' : '#ef4444';
-        const bodyTop = y(Math.max(b.o, b.c));
-        const bodyBot = y(Math.min(b.o, b.c));
-        const bodyH = Math.max(1.5, bodyBot - bodyTop);
-        const bodyW = Math.max(2, bw * 0.55);
-        return (
-          <g key={i}>
-            <line x1={cx} y1={y(b.h)} x2={cx} y2={y(b.l)} stroke={color} strokeWidth={1} />
-            <rect
-              x={cx - bodyW / 2}
-              y={bodyTop}
-              width={bodyW}
-              height={bodyH}
-              fill={color}
-            />
-          </g>
-        );
-      })}
-
-      {/* last badge on Y */}
-      {last != null && (
-        <g>
-          <rect
-            x={W - padR + 2}
-            y={y(last) - 8}
-            width={padR - 6}
-            height={14}
-            rx={2}
-            fill="#22c55e"
-          />
-          <text
-            x={W - 6}
-            y={y(last) + 2}
-            textAnchor="end"
-            fill="#0a1018"
-            fontSize={9}
-            fontWeight={700}
-          >
-            {last.toFixed(2)}
-          </text>
-        </g>
-      )}
-
-      {/* volume pane */}
-      <line
-        x1={padL}
-        y1={H - volH}
-        x2={padL + plotW}
-        y2={H - volH}
-        stroke="#1e2a3d"
-      />
-      {bars.map((b, i) => {
-        const cx = x(i);
-        const up = b.c >= b.o;
-        const color = up ? 'rgba(34,197,94,0.55)' : 'rgba(239,68,68,0.55)';
-        const vh = (b.v / maxV) * (volH - 10);
-        const bodyW = Math.max(2, bw * 0.55);
-        return (
-          <rect
-            key={`v${i}`}
-            x={cx - bodyW / 2}
-            y={H - 4 - vh}
-            width={bodyW}
-            height={Math.max(1, vh)}
-            fill={color}
-          />
-        );
-      })}
-
-      {/* time labels */}
-      {timeIdx.map((i) => (
-        <text
-          key={`t${i}`}
-          x={x(i)}
-          y={H - volH - 4}
-          textAnchor="middle"
-          fill="#8b9bb3"
-          fontSize={8}
-        >
-          {fmtEt(bars[i].t)}
-        </text>
-      ))}
-    </svg>
   );
 }

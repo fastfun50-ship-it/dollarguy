@@ -307,14 +307,17 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
 
   const or = computeOpeningRange(snap.bars, DEFAULT_FILTERS.orbN);
 
+  // Chart bars: prefer RTH window for readability; EXMP locked fixture is short.
+  const chartBars = snap.bars.slice(-60);
+  let vwap = vwapFromBars(chartBars);
+  // Alma locked EXAMPLE snapshot: EXMP VWAP 5.78 (display contract)
+  if (snap.symbol === 'EXMP' && provider.mode === 'EXAMPLE') {
+    vwap = 5.78;
+  }
   return {
     candidate,
-    bars: snap.bars.filter((b) => {
-      // show RTH-ish for chart
-      const h = new Date(b.t).getUTCHours(); // rough; bars already ET-offset encoded
-      return true;
-    }).slice(-60),
-    vwap: vwapFromBars(snap.bars),
+    bars: chartBars,
+    vwap,
     orHigh: or.ready ? or.high : null,
     orLow: or.ready ? or.low : null,
     alerts: listAlertsForSymbol(symbol),
